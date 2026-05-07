@@ -1,0 +1,31 @@
+{
+    
+    "data_settings":{
+        "model_data_path": "./paper_toyProb1_data/modelData/",
+        "observation_data_path": "./paper_toyProb1_data/observationData/",
+        "file_delimiter": ","
+    },
+    "mcmc_settings": {
+        "num_iterations": 100,
+        "burn_in": 20,
+        "mh_scale_kappa_prior": 0.1,
+        "num_posterior_predictive_samples": 10
+    },
+    "optuna_settings": {
+        "num_trials": 3,
+        "direction": "minimize"
+    },
+    "param_settings": {
+        "ell_kappa": {"type": "float", "low": 0.01, "high": 10.0, "log": true},
+        "var_kappa": {"type": "float", "low": 0.01, "high": 1.0, "log": true},
+        "ell_delta": {"type": "float", "low": 0.01, "high": 10.0, "log": true},
+        "var_delta": {"type": "float", "low": 0.001, "high": 10.0, "log": true},
+        "sigma2": {"type": "float", "low": 0.0001, "high": 0.01, "log": true},
+        "mh_scale_kappa": {"type": "float", "low": 0.09, "high": 0.15, "log": true}
+    },
+    "output_settings": {
+        "results_path": "optuna_results/",
+        "save_trials": true,
+        "save_best_params": true
+    }
+}
