@@ -1,5 +1,11 @@
 # CAKED-UP
 
+
+[![arXiv](https://img.shields.io/badge/arXiv-2605.30492-b31b1b.svg)](https://arxiv.org/abs/2605.30492)
+[![Citation](https://img.shields.io/badge/Citation-CFF-brightgreen.svg)](./CITATION.cff)
+
+
+
 **Calibration Addressing Kappa Embedded Discrepancy with Uncertainty Propagation (CAKED-UP)** is a Bayesian calibration framework for inexact computer models. The method combines Gaussian Process (GP) emulation, Bayesian inference, and orthogonal discrepancy projections to quantify:
 
 - Calibration parameter uncertainty
@@ -320,10 +326,31 @@ Planned improvements include:
 - Improved documentation and tutorials
 
 ---
-
 # Citation
 
-If you use CAKED-UP in academic work, please consider citing the associated publications and repository.
+If you use CAKED-UP in your research, please cite the associated methodology paper:
+
+```bibtex
+@article{myhill2026cakedup,
+  title={Shrinkage-Constrained Functional Calibration for Complex Computer Models},
+  author={Myhill, Liam and Martinez, Enrique and Russcher, Sez},
+  journal={arXiv preprint arXiv:2605.30492},
+  year={2026},
+  url={https://arxiv.org/abs/2605.30492}
+}
+```
+
+A machine-readable citation is also provided via the repository's `CITATION.cff` file. GitHub will automatically expose a **"Cite this repository"** button in the repository sidebar when the file is present.
+
+## Related Publication
+
+**Liam Myhill, Enrique Martinez, and Sez Russcher.**
+
+*Shrinkage-Constrained Functional Calibration for Complex Computer Models.*
+
+arXiv:2605.30492 (2026)
+
+https://arxiv.org/abs/2605.30492
 
 ---
 
