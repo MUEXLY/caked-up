@@ -10,12 +10,12 @@
             "log_var_kappa": 0.1
         },
         "kappa_prior_vals":{
-            "ell": 0.1,
-            "var": 0.1
+            "ell": 0.01,
+            "var": 0.2
         },
         "delta_eta_prior_vals":{
             "ell": 0.1,
-            "var": 0.2
+            "var": 0.3
         },
         "sigma2_prior_val": 0.002,
         "sigma2_prior_vals": {
@@ -80,7 +80,9 @@
             "delta_posterior_normalized": true,
             "delta_posterior_physical": true,
             "acceptance_trajectory": true,
-            "step_size_plot": true
+            "step_size_plot": true,
+            "variance_decomposition": true,
+            "relative_contributions": true
         },
         "results_path": "results/",
         "results_options":{

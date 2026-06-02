@@ -518,6 +518,310 @@ def plot_pca_diagnostics(
     # plt.show()
     plt_path = os.path.join(figure_directory, figure_name)
     plt.savefig(plt_path, dpi=150)
+    
+    return()
+
+
+
+def discrepancy_variance_decomposition(
+    x_obs,
+    y_obs,
+    theta_fixed,
+    kappa_theta_chain,
+    delta_eta_chain,
+    kappa_mean,
+    delta_eta_mean,
+    gp_eta,
+    x_obs_input,
+    Nsamp=200,
+    plot=True,
+    figure_path=None,
+    save_name="variance_decomposition.png",
+    suptitle="Posterior Predictive Variance Decomposition"
+):
+    """
+    Decomposes posterior predictive variance into:
+    
+    1. Emulator (GP) uncertainty
+    2. θ / κ uncertainty
+    3. δ(x) uncertainty
+    4. Total variance
+    
+    Also computes Law of Total Variance decomposition:
+        Var(Y) = E[Var(Y|θ,δ)] + Var(E[Y|θ,δ])
+    """
+
+    No = len(x_obs)
+    Nmcmc = kappa_theta_chain.shape[0]
+    dtheta = kappa_theta_chain.shape[1]
+
+    idx = np.random.choice(Nmcmc, Nsamp, replace=False)
+
+    # storage
+    var_total = np.zeros(No)
+    var_emulator = np.zeros(No)
+    var_kappa = np.zeros(No)
+    var_delta = np.zeros(No)
+
+    var_epistemic = np.zeros(No)
+    var_aleatoric = np.zeros(No)
+
+    for i in range(No):
+
+        # ------------------------------------------------------------
+        # 1. TOTAL posterior predictive samples
+        # ------------------------------------------------------------
+        y_samps = []
+
+        for s in idx:
+            kappa_s = kappa_theta_chain[s, :, i]
+            theta_star = theta_fixed + kappa_s
+            delta_s = delta_eta_chain[s, i]
+
+            m, v = eta_predict(x_obs[i], theta_star, gp_eta)
+
+            y_samps.append(m + delta_s)
+
+        y_samps = np.array(y_samps)
+        var_total[i] = np.var(y_samps)
+
+        # ------------------------------------------------------------
+        # 2. Emulator-only uncertainty (GP conditional variance)
+        # ------------------------------------------------------------
+        theta_star_mean = theta_fixed + kappa_mean[:, i]
+        _, v_gp = eta_predict(x_obs[i], theta_star_mean, gp_eta)
+        var_emulator[i] = v_gp
+
+        # ------------------------------------------------------------
+        # 3. κ (parameter discrepancy) uncertainty
+        # ------------------------------------------------------------
+        y_kappa = []
+        for s in idx:
+            theta_star = theta_fixed + kappa_theta_chain[s, :, i]
+            m, _ = eta_predict(x_obs[i], theta_star, gp_eta)
+            y_kappa.append(m + delta_eta_mean[i])
+
+        var_kappa[i] = np.var(y_kappa)
+
+        # ------------------------------------------------------------
+        # 4. δ(x) uncertainty
+        # ------------------------------------------------------------
+        y_delta = []
+        for s in idx:
+            m, _ = eta_predict(x_obs[i], theta_fixed + kappa_mean[:, i], gp_eta)
+            y_delta.append(m + delta_eta_chain[s, i])
+
+        var_delta[i] = np.var(y_delta)
+
+        # ------------------------------------------------------------
+        # 5. Law of Total Variance decomposition
+        # ------------------------------------------------------------
+
+        # epistemic: variation of conditional mean
+        cond_means = []
+
+        for s in idx:
+            kappa_s = kappa_theta_chain[s, :, i]
+            theta_star = theta_fixed + kappa_s
+            delta_s = delta_eta_chain[s, i]
+
+            m, _ = eta_predict(x_obs[i], theta_star, gp_eta)
+            cond_means.append(m + delta_s)
+
+        cond_means = np.array(cond_means)
+
+        var_epistemic[i] = np.var(cond_means)
+
+        # aleatoric: expected GP variance
+        gp_vars = []
+
+        for s in idx:
+            kappa_s = kappa_theta_chain[s, :, i]
+            theta_star = theta_fixed + kappa_s
+
+            _, v = eta_predict(x_obs[i], theta_star, gp_eta)
+            gp_vars.append(v)
+
+        var_aleatoric[i] = np.mean(gp_vars)
+
+    # ============================================================
+    # Normalize contributions
+    # ============================================================
+    denom = var_total + 1e-12
+
+    frac_emulator = var_emulator / denom
+    frac_kappa = var_kappa / denom
+    frac_delta = var_delta / denom
+
+    # ============================================================
+    # Plotting
+    # ============================================================
+    if plot:
+
+        x = np.arange(No)
+
+        fig, ax = plt.subplots(1, 2, figsize=(14, 4))
+
+        # ---------------------------
+        # (1) Relative contributions
+        # ---------------------------
+        ax[0].bar(x, frac_emulator, label="Emulator (GP)")
+        ax[0].bar(x, frac_kappa, bottom=frac_emulator, label="θ / κ")
+        ax[0].bar(x, frac_delta, bottom=frac_emulator + frac_kappa, label="δ(x)")
+
+        ax[0].set_title("Posterior Variance Decomposition")
+        ax[0].set_xlabel("Observation index")
+        ax[0].set_ylabel("Fraction of variance")
+        ax[0].legend()
+
+        # ---------------------------
+        # (2) Law of total variance
+        # ---------------------------
+        ax[1].plot(var_total, label="Total variance", lw=2)
+        ax[1].plot(var_epistemic, label="Epistemic (κ + δ)", ls="--")
+        ax[1].plot(var_aleatoric, label="Aleatoric (GP)", ls=":")
+        ax[1].set_title("Law of Total Variance")
+        ax[1].set_xlabel("Observation index")
+        ax[1].set_ylabel("Variance")
+        ax[1].legend()
+
+        plt.tight_layout()
+
+        plt.suptitle(suptitle)
+
+        if figure_path is not None:
+            plt.savefig(f"{figure_path}/{save_name}", dpi=300)
+
+        plt.show()
+
+    return {
+        "var_total": var_total,
+        "var_emulator": var_emulator,
+        "var_kappa": var_kappa,
+        "var_delta": var_delta,
+        "var_epistemic": var_epistemic,
+        "var_aleatoric": var_aleatoric,
+        "frac_emulator": frac_emulator,
+        "frac_kappa": frac_kappa,
+        "frac_delta": frac_delta
+    }
+
+def plot_relative_contributions(
+    x,
+    contrib,
+    figure_path=None,
+    save_name="relative_contributions.png",
+    suptitle="Relative Discrepancy Contributions"
+):
+
+    # ------------------------------------------------------------
+    # Magnitudes
+    # ------------------------------------------------------------
+    kappa_mag = np.abs(contrib["kappa_mean"])
+    eta_mag = np.abs(contrib["eta_mean"])
+
+    total_mag = kappa_mag + eta_mag + 1e-12
+
+    kappa_ratio = kappa_mag / total_mag
+    eta_ratio = eta_mag / total_mag
+
+    # ------------------------------------------------------------
+    # Plot
+    # ------------------------------------------------------------
+    fig, ax = plt.subplots(
+        2, 1,
+        figsize=(10, 6),
+        sharex=True
+    )
+
+    # ============================================================
+    # TOP: actual contribution magnitudes
+    # ============================================================
+    ax[0].plot(
+        x,
+        contrib["kappa_mean"],
+        label=r"$\kappa_\theta$ contribution"
+    )
+
+    ax[0].fill_between(
+        x,
+        contrib["kappa_mean"] - contrib["kappa_std"],
+        contrib["kappa_mean"] + contrib["kappa_std"],
+        alpha=0.3
+    )
+
+    ax[0].plot(
+        x,
+        contrib["eta_mean"],
+        label=r"$\delta_\eta$ contribution"
+    )
+
+    ax[0].fill_between(
+        x,
+        contrib["eta_mean"] - contrib["eta_std"],
+        contrib["eta_mean"] + contrib["eta_std"],
+        alpha=0.3
+    )
+
+    ax[0].axhline(0, color='k', lw=0.8)
+
+    ax[0].set_ylabel("Contribution")
+    ax[0].set_title("Posterior Mean Contributions")
+    ax[0].legend()
+
+    # ============================================================
+    # BOTTOM: relative dominance
+    # ============================================================
+    ax[1].plot(
+        x,
+        kappa_ratio,
+        label=r"$\kappa_\theta$ dominance"
+    )
+
+    ax[1].plot(
+        x,
+        eta_ratio,
+        label=r"$\delta_\eta$ dominance"
+    )
+
+    ax[1].axhline(
+        0.5,
+        linestyle="--",
+        color="k",
+        lw=1
+    )
+
+    ax[1].set_ylim([0, 1])
+
+    ax[1].set_ylabel("Relative magnitude")
+    ax[1].set_xlabel("x")
+    ax[1].set_title("Relative Contribution Fractions")
+
+    ax[1].legend()
+
+    plt.suptitle(suptitle)
+
+    plt.tight_layout()
+
+    if figure_path is not None:
+        plt.savefig(
+            f"{figure_path}/{save_name}",
+            dpi=300,
+            bbox_inches='tight'
+        )
+
+    plt.show()
+
+def eta_predict(x, theta_star, gp_eta):
+
+    x = np.atleast_1d(np.asarray(x))
+    theta_star = np.atleast_1d(np.asarray(theta_star))
+
+    z = np.hstack([x, theta_star]).reshape(1, -1)
+
+    m, s2 = gp_eta.predict(z, return_std=True)
+
+    return m[0], s2[0]**2
 
 # def plot_discrepancy_diagnostics_normalized(
 #     x_obs,

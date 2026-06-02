@@ -795,10 +795,56 @@ def main():
             suptitle='Posterior Predictive Check (Normalized Space)'
         )
 
-   
+    if figure_options['variance_decomposition']:
 
-        with open(f"{results_path}/used_config.json", "w") as f:
-            json.dump(config, f, indent=2)
+        print("Generating variance decomposition diagnostics...")
+
+        var_results = discrepancy_variance_decomposition(
+            x_obs=x_obs,
+            y_obs=y_obs,
+            theta_fixed=theta_fixed,
+            kappa_theta_chain=kappa_theta_chain,
+            delta_eta_chain=delta_eta_chain,
+            kappa_mean=kappa_mean,
+            delta_eta_mean=delta_eta_mean,
+            gp_eta=gp_eta,
+            x_obs_input=x_obs,
+            Nsamp=200,
+            plot=True,
+            figure_path=figure_path,
+            save_name="variance_decomposition.png",
+            suptitle="Variance Decomposition of Discrepancy"
+        )
+
+    if figure_options['relative_contributions']:
+
+        print("Generating relative contribution diagnostics...")
+
+        contrib = compute_relative_contributions(
+            x_obs=x_obs,
+            theta_fixed=theta_fixed,
+            kappa_theta_chain=kappa_theta_chain,
+            delta_eta_chain=delta_eta_chain,
+            gp_eta=gp_eta,
+            Nsamp=200
+        )
+
+        plot_relative_contributions(
+            x=results_physical[f'x_obs_{x_label}'].values,
+            contrib=contrib,
+            figure_path=figure_path,
+            save_name="relative_contributions.png",
+            suptitle="Relative Contributions of κ and δη"
+        )
+
+        
+
+
+        
+    
+
+    with open(f"{results_path}/used_config.json", "w") as f:
+        json.dump(config, f, indent=2)
 
 
     # If cross-validation is enabled, compute the loss between:
@@ -806,79 +852,321 @@ def main():
     # 2. The known ground truth of theta vs. the posterior mean of theta (theta_fixed + kappa_mean)
     # 3. The known ground truth of delta vs. the posterior mean of delta_eta
     # Print the results to a loss_output.json file and plot the loss convergence across MCMC iterations if the option is enabled in the config file
+    # ============================================================
+    # Cross-validation metrics (physical units)
+    # ============================================================
+
     if cross_validation_settings["conduct_cross_validation"]:
-        print(f"Computing cross-validation losses (real space)...")
 
-        # Create arrays for the known forms based on the settings in the config file
+        print("Computing cross-validation losses (physical space)...")
 
-        # 1. y loss (e.g. MSE)
-        y_true = obs_data[[col for col in obs_data.columns if col.startswith('zeta_')]].values.flatten()
-        y_pred = results_physical['y_post_mean'].values
-        y_mse = np.mean((y_true - y_pred) ** 2)
+        # ========================================================
+        # Known theta form setup
+        # ========================================================
 
-        # 2. theta loss (e.g. MSE across all theta dimensions)
-        known_theta_form = cross_validation_settings["known_theta_form"]
-        known_theta_params = cross_validation_settings["known_theta_form_params"][known_theta_form]
-        
-        if known_theta_form == "constant":
-            theta_true = np.array(known_theta_params["values"])
-        elif known_theta_form == "trig_funct":
-            # Compute trig function values at first observation
-            x_val = x_obs[0, 0]
-            functions = known_theta_params["functions"]
-            theta_true = np.array([
-                np.sin(x_val) if func == "sin" else np.cos(x_val)
-                for func in functions
-            ])
-        else:
-            raise ValueError(f"Unknown known_theta_form: {known_theta_form}")
-        
-        theta_pred = theta_fixed_arr[0] + kappa_mean[:, 0]  # posterior mean of theta at first observation
-        theta_mse = np.mean((theta_true - theta_pred) ** 2)
+        known_theta_form = cross_validation_settings[
+            "known_theta_form"
+        ]
 
-        # 3. delta loss (e.g. MSE)
-        if cross_validation_settings["known_delta_form"] is not None:
-            known_delta_form = cross_validation_settings["known_delta_form"]
-            known_delta_params = cross_validation_settings["known_delta_form_params"][known_delta_form]
-            
+        known_theta_params = (
+            cross_validation_settings[
+                "known_theta_form_params"
+            ][known_theta_form]
+        )
+
+        # ========================================================
+        # 1. Posterior predictive y metrics
+        # ========================================================
+
+        y_true = obs_data[
+            [
+                col for col in obs_data.columns
+                if col.startswith('zeta_')
+            ]
+        ].values.flatten()
+
+        y_pred = results_physical[
+            'y_post_mean'
+        ].values.flatten()
+
+        y_mse = np.mean(
+            (y_true - y_pred) ** 2
+        )
+
+        y_rmse = np.sqrt(y_mse)
+
+        y_range = (
+            np.max(y_true)
+            - np.min(y_true)
+        )
+
+        y_nrmse = y_rmse / (y_range + 1e-12)
+
+        print(f"y MSE:   {y_mse:.6f}")
+        print(f"y NRMSE:{y_nrmse:.6f}")
+
+        # ========================================================
+        # 2. Theta field metrics
+        # ========================================================
+
+        theta_mse = {}
+        theta_nrmse = {}
+
+        for k in range(dtheta):
+
+            # ----------------------------------------------------
+            # Build true theta field
+            # ----------------------------------------------------
+
+            if known_theta_form == "constant":
+
+                theta_true_k = (
+                    np.ones(No)
+                    * known_theta_params["values"][k]
+                )
+
+            elif known_theta_form == "trig_funct":
+
+                func = known_theta_params[
+                    "functions"
+                ][k]
+
+                x_vals = x_obs_phys.flatten()
+
+                if func == "sin":
+                    theta_true_k = np.sin(x_vals)
+
+                elif func == "cos":
+                    theta_true_k = np.cos(x_vals)
+
+                else:
+                    raise ValueError(
+                        f"Unknown trig function: {func}"
+                    )
+
+            else:
+                raise ValueError(
+                    f"Unknown known_theta_form: "
+                    f"{known_theta_form}"
+                )
+
+            # ----------------------------------------------------
+            # Predicted theta field
+            # ----------------------------------------------------
+
+            theta_pred_k = (
+                theta_fixed[k]
+                + kappa_mean[k, :]
+            )
+
+            # ----------------------------------------------------
+            # MSE
+            # ----------------------------------------------------
+
+            mse_k = np.mean(
+                (theta_true_k - theta_pred_k) ** 2
+            )
+
+            rmse_k = np.sqrt(mse_k)
+
+            theta_range_k = (
+                np.max(theta_true_k)
+                - np.min(theta_true_k)
+            )
+
+            if theta_range_k < 1e-12:
+                theta_range_k = 1.0
+
+            nrmse_k = rmse_k / theta_range_k
+
+            theta_mse[f"theta_{k}"] = float(mse_k)
+
+            theta_nrmse[f"theta_{k}"] = float(nrmse_k)
+
+            print(
+                f"Theta {k}: "
+                f"MSE={mse_k:.6f}, "
+                f"NRMSE={nrmse_k:.6f}"
+            )
+
+        theta_mse_total = np.mean(
+            list(theta_mse.values())
+        )
+
+        theta_nrmse_total = np.mean(
+            list(theta_nrmse.values())
+        )
+
+        # ========================================================
+        # 3. Additive discrepancy metrics
+        # ========================================================
+
+        if cross_validation_settings[
+            "known_delta_form"
+        ] is not None:
+
+            known_delta_form = (
+                cross_validation_settings[
+                    "known_delta_form"
+                ]
+            )
+
+            known_delta_params = (
+                cross_validation_settings[
+                    "known_delta_form_params"
+                ][known_delta_form]
+            )
+
+            x_val = x_obs_phys.flatten()
+
             if known_delta_form == "power_law":
+
                 coeff = known_delta_params["coeff"]
-                exponent = known_delta_params["exponent"]
-                delta_true = coeff * (np.abs(x_obs.flatten()) ** exponent)
+
+                exponent = known_delta_params[
+                    "exponent"
+                ]
+
+                delta_true = (
+                    coeff
+                    * (np.abs(x_val) ** exponent)
+                )
+
             elif known_delta_form == "trig_funct":
-                x_val = x_obs.flatten()
-                functions = known_delta_params["function"]
+
+                functions = known_delta_params[
+                    "function"
+                ]
+
                 delta_true = np.zeros_like(x_val)
+
                 for func in functions:
+
                     if func == "sin":
                         delta_true += np.sin(x_val)
+
                     elif func == "cos":
                         delta_true += np.cos(x_val)
-            else:
-                raise ValueError(f"Unknown known_delta_form: {known_delta_form}")
-            
-            delta_pred = results_normalized['delta_eta_mean'].values
-            delta_mse = np.mean((delta_true - delta_pred) ** 2)
-        else:
-            delta_mse = None
 
-        # Compute net loss (sum of MSEs)
-        net_loss = y_mse + theta_mse
+            else:
+                raise ValueError(
+                    f"Unknown known_delta_form: "
+                    f"{known_delta_form}"
+                )
+
+            # ----------------------------------------------------
+            # Convert delta prediction to physical units
+            # ----------------------------------------------------
+
+            delta_pred_norm = (
+                results_normalized[
+                    'delta_eta_mean'
+                ]
+                .values
+                .flatten()
+            )
+
+            delta_pred_phys = (
+                delta_pred_norm * y_std
+                + y_mean
+            )
+
+            delta_mse = np.mean(
+                (delta_true - delta_pred_phys) ** 2
+            )
+
+            delta_rmse = np.sqrt(delta_mse)
+
+            delta_range = (
+                np.max(delta_true)
+                - np.min(delta_true)
+            )
+
+            if delta_range < 1e-12:
+                delta_range = 1.0
+
+            delta_nrmse = (
+                delta_rmse / delta_range
+            )
+
+            print(
+                f"Delta: "
+                f"MSE={delta_mse:.6f}, "
+                f"NRMSE={delta_nrmse:.6f}"
+            )
+
+        else:
+
+            delta_mse = None
+            delta_nrmse = None
+
+        # ========================================================
+        # Net metrics
+        # ========================================================
+
+        net_loss = y_mse + theta_mse_total
+
+        net_nrmse = (
+            y_nrmse
+            + theta_nrmse_total
+        )
+
         if delta_mse is not None:
             net_loss += delta_mse
 
-        # Save losses to a json file
-        loss_dict = {
-            "y_mse": float(y_mse),
-            "theta_mse": float(theta_mse),
-            "delta_mse": float(delta_mse) if delta_mse is not None else None,
-            "net_loss": float(net_loss)
-        }
-        with open(os.path.join(results_path, "cross_validation_losses.json"), "w") as f:
-            json.dump(loss_dict, f, indent=4)
-        print(f"Saved cross-validation losses to {os.path.join(results_path, 'cross_validation_losses.json')}")
-        print(f"y_mse: {y_mse:.6f}, theta_mse: {theta_mse:.6f}, delta_mse: {delta_mse}, net_loss: {net_loss:.6f}")
+        if delta_nrmse is not None:
+            net_nrmse += delta_nrmse
 
+        # ========================================================
+        # Save JSON
+        # ========================================================
+
+        loss_dict = {
+
+            "y_mse": float(y_mse),
+            "y_nrmse": float(y_nrmse),
+
+            "theta_mse": theta_mse,
+            "theta_nrmse": theta_nrmse,
+
+            "theta_mse_total": float(
+                theta_mse_total
+            ),
+
+            "theta_nrmse_total": float(
+                theta_nrmse_total
+            ),
+
+            "delta_mse": (
+                float(delta_mse)
+                if delta_mse is not None
+                else None
+            ),
+
+            "delta_nrmse": (
+                float(delta_nrmse)
+                if delta_nrmse is not None
+                else None
+            ),
+
+            "net_loss": float(net_loss),
+            "net_nrmse": float(net_nrmse)
+        }
+
+        with open(
+            os.path.join(
+                results_path,
+                "cross_validation_losses.json"
+            ),
+            "w"
+        ) as f:
+
+            json.dump(loss_dict, f, indent=4)
+
+        print(
+            f"Saved cross-validation losses to "
+            f"{os.path.join(results_path, 'cross_validation_losses.json')}"
+        )
 
     return()
 

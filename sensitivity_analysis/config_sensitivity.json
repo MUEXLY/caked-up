@@ -1,0 +1,10 @@
+{
+    "base_path": "./results/sweep",
+    "legend": true,
+    "reference_case": { 
+        "kvar": 0.6,
+        "kell": 90.0,
+        "evar": 3.5,
+        "eell": 0.05
+    }
+}

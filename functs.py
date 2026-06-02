@@ -271,3 +271,99 @@ def compute_jacobian(x, theta, gp, eps=1e-4):
         J[k] = (pert - base) / eps
 
     return J
+
+def compute_relative_contributions(
+    x_obs,
+    theta_fixed,
+    kappa_theta_chain,
+    delta_eta_chain,
+    gp_eta,
+    Nsamp=200
+):
+    """
+    Computes additive contribution decomposition:
+
+        y = η(x, θ_fixed)
+            + Δη_κ
+            + δη
+
+    where:
+        Δη_κ = η(x, θ_fixed + κ) - η(x, θ_fixed)
+
+    Returns posterior means/stds for each contribution.
+    """
+
+    Nmcmc, dtheta, No = kappa_theta_chain.shape
+
+    idx = np.random.choice(Nmcmc, Nsamp, replace=False)
+
+    # ------------------------------------------------------------
+    # Storage
+    # ------------------------------------------------------------
+    base = np.zeros((Nsamp, No))
+    kappa_effect = np.zeros((Nsamp, No))
+    eta_effect = np.zeros((Nsamp, No))
+    full = np.zeros((Nsamp, No))
+
+    for s_i, s in enumerate(idx):
+
+        for i in range(No):
+
+            # ----------------------------------------------------
+            # Baseline emulator
+            # ----------------------------------------------------
+            m_base, _ = eta_predict(
+                x_obs[i],
+                theta_fixed,
+                gp_eta
+            )
+
+            # ----------------------------------------------------
+            # κ-shifted emulator
+            # ----------------------------------------------------
+            theta_star = (
+                theta_fixed
+                + kappa_theta_chain[s, :, i]
+            )
+
+            m_theta, _ = eta_predict(
+                x_obs[i],
+                theta_star,
+                gp_eta
+            )
+
+            # ----------------------------------------------------
+            # Contributions
+            # ----------------------------------------------------
+            base[s_i, i] = m_base
+
+            # κ-induced change
+            kappa_effect[s_i, i] = (
+                m_theta - m_base
+            )
+
+            # additive discrepancy
+            eta_effect[s_i, i] = (
+                delta_eta_chain[s, i]
+            )
+
+            # total prediction
+            full[s_i, i] = (
+                m_theta
+                + delta_eta_chain[s, i]
+            )
+
+    return {
+
+        "base_mean": base.mean(axis=0),
+        "base_std": base.std(axis=0),
+
+        "kappa_mean": kappa_effect.mean(axis=0),
+        "kappa_std": kappa_effect.std(axis=0),
+
+        "eta_mean": eta_effect.mean(axis=0),
+        "eta_std": eta_effect.std(axis=0),
+
+        "full_mean": full.mean(axis=0),
+        "full_std": full.std(axis=0),
+    }

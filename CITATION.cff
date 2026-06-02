@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the associated paper."
+title: "Shrinkage-Constrained Functional Calibration for Complex Computer Models"
+
+authors:
+  - family-names: "Myhill"
+    given-names: "Liam"
+  - family-names: "Martinez"
+    given-names: "Enrique"
+  - family-names: "Russcher"
+    given-names: "Sez"
+
+type: software
+
+preferred-citation:
+  type: article
+  title: "Shrinkage-Constrained Functional Calibration for Complex Computer Models"
+  authors:
+    - family-names: "Myhill"
+      given-names: "Liam"
+    - family-names: "Martinez"
+      given-names: "Enrique"
+    - family-names: "Russcher"
+      given-names: "Sez"
+  year: 2026
+  journal: "arXiv"
+  volume: "arXiv:2605.30492"
+  url: "https://arxiv.org/abs/2605.30492"

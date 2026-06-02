@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -90,7 +91,7 @@ def plot_panel(ax, res, ref_res, ylim):
             alpha=0.8
         )
         lines.append(line_k)
-        labels.append(rf"$\kappa_{{{k}}}(x)$")
+        labels.append(rf"$\kappa_{{{k+1}}}(x)$")
 
     ax.axhline(0, linestyle="--", color="black", linewidth=0.8)
 
@@ -107,7 +108,7 @@ def plot_panel(ax, res, ref_res, ylim):
 # Main figure builder
 # --------------------------------------------------
 
-def create_2D_sensitivity_figure(base_path, reference_case, prior_prefix):
+def create_2D_sensitivity_figure(base_path, reference_case, prior_prefix, legend=True):
 
     var_key = f"{prior_prefix}var"
     ell_key = f"{prior_prefix}ell"
@@ -148,10 +149,20 @@ def create_2D_sensitivity_figure(base_path, reference_case, prior_prefix):
     # --------------------------------------------------
 
     fig, axes = plt.subplots(
-        len(ell_vals),
-        len(var_vals),
-        figsize=(3 * len(var_vals), 3 * len(ell_vals)),
-        constrained_layout=True
+    len(ell_vals),
+    len(var_vals),
+    figsize=(3 * len(var_vals), 3 * len(ell_vals)),
+    constrained_layout=False
+)
+
+    # reserve room for titles/subtitles
+    fig.subplots_adjust(
+        top=0.83,
+        left=0.12,
+        bottom=0.12,
+        right=0.88,
+        wspace=0.03,
+        hspace=0.05
     )
 
     if len(ell_vals) == 1:
@@ -180,10 +191,10 @@ def create_2D_sensitivity_figure(base_path, reference_case, prior_prefix):
 
             # --- edge labeling ---
             if i == 0:
-                ax.set_title(rf"$\sigma={var}$", fontsize=10)
+                ax.set_title(rf"$\sigma={var}$", fontsize=20)
 
             if j == 0:
-                ax.set_ylabel(rf"$\ell={ell}$", fontsize=10)
+                ax.set_ylabel(rf"$\ell={ell}$", fontsize=20)
 
             # --- highlight reference row/col ---
             if ell == ref_key[0] or var == ref_key[1]:
@@ -198,43 +209,75 @@ def create_2D_sensitivity_figure(base_path, reference_case, prior_prefix):
                     transform=ax.transAxes,
                     ha="center",
                     va="center",
-                    fontsize=10,
+                    fontsize=20,
                     bbox=dict(boxstyle="round", facecolor="white", alpha=0.7)
                 )
 
-    # --- global labels ---
-    fig.supxlabel(
-        rf"Increasing $\sigma$ ({prior_prefix}-prior variance)",
-        fontsize=13
-    )
+    #--------------------------------------------------
+    # Global axis labels
+    # --------------------------------------------------
 
-    fig.supylabel(
-        rf"Increasing $\ell$ ({prior_prefix}-prior lengthscale)",
-        fontsize=13
-    )
+    if prior_prefix == "e":
 
-    # --- title + interpretation ---
+        fig.supxlabel(
+            r"Increasing $\sigma_{\delta_\eta}$",
+            fontsize=28
+        )
+
+        fig.supylabel(
+            r"Increasing $\ell_{\delta_\eta}$",
+            fontsize=28
+        )
+
+    elif prior_prefix == "k":
+
+        fig.supxlabel(
+            r"Increasing $\sigma_{\kappa}$",
+            fontsize=28
+        )
+
+        fig.supylabel(
+            r"Increasing $\ell_{\kappa}$",
+            fontsize=28
+        )
+
+    # --------------------------------------------------
+    # Suptitle hierarchy
+    # --------------------------------------------------
+
     title_map = {
-        "k": r"Sensitivity of $\kappa$ prior",
-        "e": r"Sensitivity of $\delta_\eta$ prior"
+        "k": r"Sensitivity of discrepancy posteriors to $\phi_{\kappa}$",
+        "e": r"Sensitivity of discrepancy posteriors to $\phi_{\delta_\eta}$"
     }
 
     fig.suptitle(
-        title_map[prior_prefix] +
-        "\nDeviation from reference (solid: $\\delta_\\eta$, dashed: $\\kappa_k$)",
-        fontsize=14
+        title_map[prior_prefix],
+        fontsize=28,
+        y=0.96
+    )
+
+    # smaller subtitle
+    fig.text(
+        0.5,
+        0.88,
+        "Deviation from reference",
+        ha="center",
+        fontsize=20
     )
 
     # --- single legend ---
-    fig.legend(
-        legend_lines,
-        legend_labels,
-        loc="upper right",
-        fontsize=10,
-        frameon=False
-    )
+    if legend:
+        fig.legend(
+            legend_lines,
+            legend_labels,
+            loc="upper left",
+            bbox_to_anchor=(1.02, 1.0),
+            fontsize=20,
+            frameon=False
+        )
 
-    plt.show()
+        # plt.show()
+    plt.savefig(f"{base_path}/sensitivity_{prior_prefix}.pdf", bbox_inches="tight")
 
 
 # --------------------------------------------------
@@ -243,27 +286,29 @@ def create_2D_sensitivity_figure(base_path, reference_case, prior_prefix):
 
 def main():
 
-    base_path = "../results/sweep"
+    # read config
+    with open("sensitivity_analysis/config_sensitivity.json", "r") as f:
+        config = json.load(f)
 
-    reference_case = {
-        "kvar": 0.6,
-        "kell": 90.0,
-        "evar": 3.5,
-        "eell": 0.05
-    }
+    base_path = config["base_path"]
+    reference_case = config["reference_case"]
+    legend = config["legend"]
+
 
     # κ prior
     create_2D_sensitivity_figure(
         base_path,
         reference_case,
-        prior_prefix="k"
+        prior_prefix="k",
+        legend=legend
     )
 
     # δ_eta prior
     create_2D_sensitivity_figure(
         base_path,
         reference_case,
-        prior_prefix="e"
+        prior_prefix="e",
+        legend=legend
     )
 
 
