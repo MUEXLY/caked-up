@@ -8,10 +8,15 @@ from scipy.stats import invgamma
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C
 from functs import *
+from shrinkage import *
 from plottingFuncts import *
 import json
 
 def main():
+
+    # ============================================================
+    # 1a. Load config settings
+    # ============================================================
 
     if len(sys.argv) < 2:
         raise ValueError("Usage: python main.py <config_path>")
@@ -24,6 +29,10 @@ def main():
     # store calibration settings
     calibration_settings = config["calibration_settings"]
 
+    # load settings for shrinkage models
+    shrinkage_settings = calibration_settings["shrinkage_models"]
+
+    # load settings for orthogonalization of delta_eta with respect to sensitivities G
     orthogonalization_settings = calibration_settings["orthogonalization_settings"]
 
     # store input settings
@@ -65,6 +74,10 @@ def main():
         figure_path = os.path.join(results_path, "figures")
 
     os.makedirs(figure_path, exist_ok=True)
+
+    # ============================================================
+    # 1b. Load the model and observation data, normalize, and prepare for calibration
+    # ============================================================
     # Load data
     # Create a DataFrame to store model data
     # The DataFrame can have any number of rows and any number of columns
@@ -269,6 +282,22 @@ def main():
     No = len(x_obs)
 
     # ============================================================
+    # 1c. Instantiate shrinkage prior objects based on config
+    # ============================================================
+
+    kappa_priors = [
+    create_prior(
+        shrinkage_settings["kappa"]
+    )
+    for _ in range(dtheta)
+    ]
+    print(f"Instantiated kappa_priors of type {kappa_priors[0].name} with initial state: {kappa_priors[0].get_state()}")
+    delta_eta_prior=create_prior(shrinkage_settings["delta_eta"])
+    print(f"Instantiated delta_eta_prior of type {delta_eta_prior.name} with initial state: {delta_eta_prior.get_state()}")
+
+
+
+    # ============================================================
     # 2. Train probabilistic emulator GP η(x,θ)
     # ============================================================
 
@@ -347,9 +376,9 @@ def main():
     kappa_theta=W @ kappa_z  # shape (dtheta, No)``
 
     # Initial hyperparameters for each \kappa (i.e. each theta dimension)
-    ell_kappa = calibration_settings['kappa_prior_vals']['ell'] * np.ones(dtheta)
-    # var_delta = 0.05 * np.ones(dtheta)
-    var_kappa = calibration_settings['kappa_prior_vals']['var'] * np.ones(dtheta) # start with smaller variance to encourage more conservative initial discrepancy fields, which can help stabilize early sampling
+    # ell_kappa = calibration_settings['kappa_prior_vals']['ell'] * np.ones(dtheta)
+    # # var_delta = 0.05 * np.ones(dtheta)
+    # var_kappa = calibration_settings['kappa_prior_vals']['var'] * np.ones(dtheta) # start with smaller variance to encourage more conservative initial discrepancy fields, which can help stabilize early sampling
 
     # Initial noise variance
     sigma2 = calibration_settings['sigma2_prior_val']**2
@@ -362,8 +391,8 @@ def main():
     delta_eta = np.zeros(No)
 
     # hyperparameters for δ_eta GP
-    ell_eta = calibration_settings['delta_eta_prior_vals']['ell']
-    var_eta = calibration_settings['delta_eta_prior_vals']['var']
+    # ell_eta = calibration_settings['delta_eta_prior_vals']['ell']
+    # var_eta = calibration_settings['delta_eta_prior_vals']['var']
 
     # ============================================================
     # 5. Sampler config
@@ -372,8 +401,8 @@ def main():
     mh_scale = calibration_settings['mh_scale_kappa_prior']
     mh_scale_kappa=np.ones(dtheta) * mh_scale
 
-    kappa_prior_ell=calibration_settings['kappa_priors']['ell']
-    kappa_prior_var=calibration_settings['kappa_priors']['var']
+    # kappa_prior_ell=calibration_settings['kappa_priors']['ell']
+    # kappa_prior_var=calibration_settings['kappa_priors']['var']
 
     mh_scales=calibration_settings['mh_scales']
 
@@ -415,8 +444,8 @@ def main():
                 kappa_z,
                 delta_eta,
                 theta_fixed,
-                ell_kappa[k],
-                var_kappa[k],
+                kappa_priors[k].ell,
+                kappa_priors[k].var,
                 x_obs,
                 y_obs,
                 gp_eta,
@@ -449,14 +478,22 @@ def main():
 
 
         # ---- update \kappa hyperparameters ----
+        # for k in range(dtheta):
+        #     ell_kappa[k], var_kappa[k], _ = mh_update_delta_hyperparams(
+        #         kappa_z[k],
+        #         ell_kappa[k],
+        #         var_kappa[k],
+        #         x_obs,
+        #         kappa_prior_ell,
+        #         kappa_prior_var,
+        #         mh_scales,
+        #         calibration_settings['allow_singular_cov']
+        #     )
+
         for k in range(dtheta):
-            ell_kappa[k], var_kappa[k], _ = mh_update_delta_hyperparams(
+            kappa_priors[k].update_hyperparameters(
                 kappa_z[k],
-                ell_kappa[k],
-                var_kappa[k],
                 x_obs,
-                kappa_prior_ell,
-                kappa_prior_var,
                 mh_scales,
                 calibration_settings['allow_singular_cov']
             )
@@ -472,9 +509,10 @@ def main():
             kappa_theta,
             gp_eta,
             sigma2,
-            ell_eta,
-            var_eta
+            delta_eta_prior.ell,
+            delta_eta_prior.var
         )
+
 
         # orthogonalize delta_eta with respect to the sensitivities G
 
@@ -482,6 +520,13 @@ def main():
             delta_eta=orthogonalize_delta_eta(delta_eta_raw, G)
         else:
             delta_eta = delta_eta_raw
+
+        delta_eta_prior.update_hyperparameters(
+            delta_eta,
+            x_obs,
+            mh_scales,
+            calibration_settings['allow_singular_cov']
+        )
 
         # ---- Gibbs update σ² ----
         sigma2 = gibbs_sigma2(
@@ -510,8 +555,15 @@ def main():
             print(" sigma2 =", sigma2)
             print(" kappa acceptance rates:",
                 accept_kappa / (it+1))
-            print(" ell_kappa:", ell_kappa)
-            print(" var_kappa:", var_kappa)
+            for k in range(dtheta):
+                print(
+                    f"kappa prior {k}:",
+                    kappa_priors[k].get_state()
+                )
+            print(
+                "delta_eta prior:",
+                delta_eta_prior.get_state()
+            )
             if orthogonalization_settings['orthogonalize_delta_eta']:
                 proj = G @ np.linalg.solve(G.T @ G, G.T @ delta_eta)
                 print("Projection norm (should be near 0):", np.linalg.norm(proj))
@@ -809,7 +861,7 @@ def main():
             delta_eta_mean=delta_eta_mean,
             gp_eta=gp_eta,
             x_obs_input=x_obs,
-            Nsamp=200,
+            Nsamp=calibration_settings['posterior_predictive_samples'],
             plot=True,
             figure_path=figure_path,
             save_name="variance_decomposition.png",
@@ -826,7 +878,7 @@ def main():
             kappa_theta_chain=kappa_theta_chain,
             delta_eta_chain=delta_eta_chain,
             gp_eta=gp_eta,
-            Nsamp=200
+            Nsamp=calibration_settings['posterior_predictive_samples']
         )
 
         plot_relative_contributions(
@@ -836,12 +888,6 @@ def main():
             save_name="relative_contributions.png",
             suptitle="Relative Contributions of κ and δη"
         )
-
-        
-
-
-        
-    
 
     with open(f"{results_path}/used_config.json", "w") as f:
         json.dump(config, f, indent=2)

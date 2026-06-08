@@ -1,62 +1,183 @@
 {
     "calibration_settings":{
-        "N_mcmc": 20000,
-        "burn_in": 1000,
+
+        "N_mcmc": 1000,
+
+        "burn_in": 100,
+
         "adapt_interval": 50,
+
+        "posterior_predictive_samples": 200,
+
+        "theta_initialization":"fixed",
+
+        "allow_singular_cov": true,
+
         "target_accept": 0.35,
+
         "mh_scale_kappa_prior": 0.1,
+
         "mh_scales":{
             "log_ell_kappa": 0.1,
             "log_var_kappa": 0.1
         },
-        "kappa_prior_vals":{
-            "ell": 0.01,
-            "var": 0.2
+
+       "shrinkage_models": {
+
+            "delta_eta": {
+
+                "field_prior": "gp",
+                "shrinkage_prior": "gp",
+
+                "gp": {
+                    "ell_init": 0.1,
+                    "var_init": 0.3,
+
+                    "ell_prior": {
+                        "mu": 0.3,
+                        "sigma": 0.5
+                    },
+
+                    "var_prior": {
+                        "mu": 0.05,
+                        "sigma": 0.5
+                    }
+                },
+                "lasso": {
+                    "lambda_init": 0.1,
+                    "lambda_prior": {
+                        "mu": 0.3,
+                        "sigma": 0.5
+                    }
+                },
+                "horseshoe": {
+                    "tau_init": 0.1,
+                    "tau_prior": {
+                        "mu": 0.3,
+                        "sigma": 0.5
+                    }
+                },
+                "spike_slab": {
+                    "pi_init": 0.5,
+                    "pi_prior": {
+                        "mu": 0.5,
+                        "sigma": 0.5
+                    },
+                    "slab_var_init": 0.3,
+                    "slab_var_prior": {
+                        "mu": 0.05,
+                        "sigma": 0.5
+                    }
+                }
+            },
+
+            "kappa": {
+                "field_prior": "gp",
+                "shrinkage_prior": "gp",
+                "groups": false,
+
+                "gp": {
+                    "ell_init": 10,
+                    "var_init": 0.1,
+
+                    "ell_prior": {
+                        "mu": 0.3,
+                        "sigma": 0.5
+                    },
+
+                    "var_prior": {
+                        "mu": 0.05,
+                        "sigma": 0.5
+                    }
+                },
+                "lasso": {
+                    "lambda_init": 0.1,
+                    "lambda_prior": {
+                        "mu": 0.3,
+                        "sigma": 0.5
+                    }
+                },
+                "horseshoe": {
+                    "tau_init": 0.1,
+                    "tau_prior": {
+                        "mu": 0.3,
+                        "sigma": 0.5
+                    }
+                },
+                "spike_slab": {
+                    "pi_init": 0.5,
+                    "pi_prior": {
+                        "mu": 0.5,
+                        "sigma": 0.5
+                    },
+                    "slab_var_init": 0.3,
+                    "slab_var_prior": {
+                        "mu": 0.05,
+                        "sigma": 0.5
+                    }
+                },
+
+                "kappa_groups": [
+
+                    {
+                        "indices": [0,1],
+                        "method": "gp"
+                    },
+
+                    {
+                        "indices": [2],
+                        "method": "spike_slab"
+                    }
+                    ]
+            }
         },
-        "delta_eta_prior_vals":{
-            "ell": 0.1,
-            "var": 0.3
+
+        "orthogonalization_settings":{
+
+            "orthogonalize_delta_eta": true,
+
+            "theta_epsilon": 1e-2
         },
+
         "sigma2_prior_val": 0.002,
+
         "sigma2_prior_vals": {
             "a": 2.0,
             "b": 0.01
-        },
-        "delta_eta_priors": {
-            "ell": {"mu": 0.3, "sigma": 0.5}, 
-            "var": {"mu": 0.05, "sigma": 0.5}
-        },
-        "kappa_priors": {
-            "ell": {"mu": 0.3, "sigma": 0.5}, 
-            "var": {"mu": 0.05, "sigma": 0.5}
-        },
-        "orthogonalization_settings":{
-            "orthogonalize_delta_eta": true,
-            "theta_epsilon": 1e-2
-        },
-        "theta_initialization":"fixed",
-        "posterior_predictive_samples": 200,
-        "allow_singular_cov": true
+        }
     },
     "input_settings":{
-        "model_data_path": "./paper_trigDelta_toyProb2_data/modelData/",
-        "obs_data_path": "./paper_trigDelta_toyProb2_data/observationData/",
+
+        "model_data_path": "./studyNo1/modelData/",
+
+        "obs_data_path": "./studyNo1/observationData/",
+
         "input_delimiter": ",",
+
         "input_header": true
     },
     "cross_validation_settings":{
-        "conduct_cross_validation": true,
+
+        "conduct_cross_validation": false,
+
         "known_theta_form": "trig_funct",
+
         "known_theta_form_params": {
+
             "constant": {
                 "values": [1.5,1.75]
             },
+
             "trig_funct": {
                 "functions": ["sin", "cos"]
             }
+
         },
+
         "known_delta_form": "trig_funct",
+
         "known_delta_form_params": {
+
             "power_law": {
                 "coeff": 0.5,
                 "exponent": 0.5
@@ -67,32 +188,58 @@
         }
     },
     "output_settings":{
+
         "figures_path": "figures/",
+
         "figure_options":{
+
             "data_priors_realspace": true,
+
             "data_priors_normalized": true,
+
             "PCA_plot": true,
+
             "radar_plot": true,
+
             "radar_animation": true,
+
             "eta_emulator_prior": true,
+
             "posterior_predict_normalized": true,
+
             "posterior_predict_physical": true,
+
             "delta_posterior_normalized": true,
+
             "delta_posterior_physical": true,
+
             "acceptance_trajectory": true,
+
             "step_size_plot": true,
+
             "variance_decomposition": true,
+
             "relative_contributions": true
         },
+
         "results_path": "results/",
+
         "results_options":{
+
             "normalization_parameters": true,
+
             "parameter_traces": true,
+
             "posterior_predictive_samples": true,
+
             "save_calibrated_parameters": true,
+
             "save_calibrated_parameters_csv": true,
+
             "save_calibrated_parameters_json": true,
+
             "output_normalized_results": true,
+
             "output_physical_results": true
         }
     }
