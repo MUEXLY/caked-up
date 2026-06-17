@@ -26,7 +26,6 @@
 
             "delta_eta": {
 
-                "field_prior": "gp",
                 "shrinkage_prior": "gp",
 
                 "gp": {
@@ -42,38 +41,12 @@
                         "mu": 0.05,
                         "sigma": 0.5
                     }
-                },
-                "lasso": {
-                    "lambda_init": 0.1,
-                    "lambda_prior": {
-                        "mu": 0.3,
-                        "sigma": 0.5
-                    }
-                },
-                "horseshoe": {
-                    "tau_init": 0.1,
-                    "tau_prior": {
-                        "mu": 0.3,
-                        "sigma": 0.5
-                    }
-                },
-                "spike_slab": {
-                    "pi_init": 0.5,
-                    "pi_prior": {
-                        "mu": 0.5,
-                        "sigma": 0.5
-                    },
-                    "slab_var_init": 0.3,
-                    "slab_var_prior": {
-                        "mu": 0.05,
-                        "sigma": 0.5
-                    }
                 }
             },
 
             "kappa": {
-                "field_prior": "gp",
-                "shrinkage_prior": "gp",
+
+                "shrinkage_prior": "horseshoe",
                 "groups": false,
 
                 "gp": {
@@ -93,8 +66,15 @@
                 "lasso": {
                     "lambda_init": 0.1,
                     "lambda_prior": {
-                        "mu": 0.3,
-                        "sigma": 0.5
+                        "shape": 2.0,
+                        "rate": 1.0
+                    }
+                },
+                "fused_lasso": {
+                    "lambda_init": 0.1,
+                    "lambda_prior": {
+                        "shape": 2.0,
+                        "rate": 1.0
                     }
                 },
                 "horseshoe": {

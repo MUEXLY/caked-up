@@ -178,49 +178,49 @@ def log_likelihood_embedded(y_obs, x_obs, theta, delta_theta,delta_eta, gp_eta, 
 
     return loglike
 
-def mh_update_delta_k(
-    k, delta_theta, delta_eta, theta,
-    ell_k, var_k,
-    x_obs, y_obs,
-    gp_eta,
-    sigma2,
-    mh_scale
-):
-    No = len(x_obs)
+# def mh_update_delta_k(
+#     k, delta_theta, delta_eta, theta,
+#     ell_k, var_k,
+#     x_obs, y_obs,
+#     gp_eta,
+#     sigma2,
+#     mh_scale
+# ):
+#     No = len(x_obs)
 
-    # --- GP prior covariance ---
-    K = rbf_kernel(x_obs, x_obs, ell=ell_k, var=var_k) + 1e-8*np.eye(No)
-    L = np.linalg.cholesky(K)
+#     # --- GP prior covariance ---
+#     K = rbf_kernel(x_obs, x_obs, ell=ell_k, var=var_k) + 1e-8*np.eye(No)
+#     L = np.linalg.cholesky(K)
 
-    # --- proposal ---
-    proposal = delta_theta[k] + mh_scale * (L @ np.random.randn(No))
+#     # --- proposal ---
+#     proposal = delta_theta[k] + mh_scale * (L @ np.random.randn(No))
 
-    delta_prop = delta_theta.copy()
-    delta_prop[k] = proposal
+#     delta_prop = delta_theta.copy()
+#     delta_prop[k] = proposal
 
-    # --- log posterior current ---
-    logpost_curr = (
-        log_likelihood_embedded(y_obs, x_obs, theta, delta_theta, delta_eta, gp_eta, sigma2)
-        + gp_log_density(delta_theta[k], K)
-    )
+#     # --- log posterior current ---
+#     logpost_curr = (
+#         log_likelihood_embedded(y_obs, x_obs, theta, delta_theta, delta_eta, gp_eta, sigma2)
+#         + gp_log_density(delta_theta[k], K)
+#     )
 
-    # --- log posterior proposed ---
-    logpost_prop = (
-        log_likelihood_embedded(y_obs, x_obs, theta, delta_prop, delta_eta, gp_eta, sigma2)
-        + gp_log_density(proposal, K)
-    )
+#     # --- log posterior proposed ---
+#     logpost_prop = (
+#         log_likelihood_embedded(y_obs, x_obs, theta, delta_prop, delta_eta, gp_eta, sigma2)
+#         + gp_log_density(proposal, K)
+#     )
 
-    # print("mean proposal jump:", np.linalg.norm(delta_prop - delta))
+#     # print("mean proposal jump:", np.linalg.norm(delta_prop - delta))
 
-    log_alpha = logpost_prop - logpost_curr
+#     log_alpha = logpost_prop - logpost_curr
 
-    # print(f"log posterior current: {logpost_curr:.3f}, proposed: {logpost_prop:.3f}, log alpha: {log_alpha:.3f}")
+#     # print(f"log posterior current: {logpost_curr:.3f}, proposed: {logpost_prop:.3f}, log alpha: {log_alpha:.3f}")
 
-    if np.log(np.random.rand()) < log_alpha:
-        delta_theta[k] = proposal
-        return delta_theta, True
-    else:
-        return delta_theta, False
+#     if np.log(np.random.rand()) < log_alpha:
+#         delta_theta[k] = proposal
+#         return delta_theta, True
+#     else:
+#         return delta_theta, False
     
 
 # orthogonalization functions

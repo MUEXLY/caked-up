@@ -286,12 +286,11 @@ def main():
     # ============================================================
 
     kappa_priors = [
-    create_prior(
-        shrinkage_settings["kappa"]
-    )
-    for _ in range(dtheta)
-    ]
+    create_prior( shrinkage_settings["kappa"])
+    for _ in range(dtheta)] # one prior object per theta dimension
+
     print(f"Instantiated kappa_priors of type {kappa_priors[0].name} with initial state: {kappa_priors[0].get_state()}")
+    
     delta_eta_prior=create_prior(shrinkage_settings["delta_eta"])
     print(f"Instantiated delta_eta_prior of type {delta_eta_prior.name} with initial state: {delta_eta_prior.get_state()}")
 
@@ -437,15 +436,13 @@ def main():
 
     for it in range(Nmcmc):
 
-        # ---- update δₖ fields ----
+        # ---- update kappa fields ----
         for k in range(dtheta):
-            kappa_z, acc = mh_update_delta_k(
+            kappa_z, acc = kappa_priors[k].sample_kappa_field(
                 k,
                 kappa_z,
                 delta_eta,
                 theta_fixed,
-                kappa_priors[k].ell,
-                kappa_priors[k].var,
                 x_obs,
                 y_obs,
                 gp_eta,
@@ -502,15 +499,25 @@ def main():
         G=compute_sensitivities(x_obs, theta_fixed, gp_eta, orthogonalization_settings['theta_epsilon'])
 
         # ---- update δ_eta_raw (Gibbs) ----
-        delta_eta_raw = gibbs_delta_eta(
+        # delta_eta_raw = gibbs_delta_eta(
+        #     x_obs,
+        #     y_obs,
+        #     theta_fixed,
+        #     kappa_theta,
+        #     gp_eta,
+        #     sigma2,
+        #     delta_eta_prior.ell,
+        #     delta_eta_prior.var
+        # )
+
+        delta_eta_raw = delta_eta_prior.sample_delta_eta_field(
+            delta_eta,
             x_obs,
             y_obs,
             theta_fixed,
             kappa_theta,
             gp_eta,
-            sigma2,
-            delta_eta_prior.ell,
-            delta_eta_prior.var
+            sigma2
         )
 
 
@@ -568,6 +575,9 @@ def main():
                 proj = G @ np.linalg.solve(G.T @ G, G.T @ delta_eta)
                 print("Projection norm (should be near 0):", np.linalg.norm(proj))
                 
+            print("||kappa_z||      =", np.linalg.norm(kappa_z))
+            print("||W @ kappa_z||  =", np.linalg.norm(W @ kappa_z))
+            print("||kappa_theta||  =", np.linalg.norm(kappa_theta))
 
             print("--------------------------------------------------")
 
