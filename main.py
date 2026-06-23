@@ -489,10 +489,11 @@ def main():
 
         for k in range(dtheta):
             kappa_priors[k].update_hyperparameters(
-                kappa_z[k],
-                x_obs,
-                mh_scales,
-                calibration_settings['allow_singular_cov']
+                k=k,
+                z=kappa_z[k],
+                x_obs=x_obs,
+                mh_scales=mh_scales,
+                allow_singular_cov=calibration_settings['allow_singular_cov']
             )
 
         # ---- compute sensitivities ---- (@ theta fixed)
@@ -529,10 +530,11 @@ def main():
             delta_eta = delta_eta_raw
 
         delta_eta_prior.update_hyperparameters(
-            delta_eta,
-            x_obs,
-            mh_scales,
-            calibration_settings['allow_singular_cov']
+            k=None,
+            z=delta_eta,
+            x_obs=x_obs,
+            mh_scales=mh_scales,
+            allow_singular_cov=calibration_settings['allow_singular_cov']
         )
 
         # ---- Gibbs update σ² ----
@@ -562,15 +564,15 @@ def main():
             print(" sigma2 =", sigma2)
             print(" kappa acceptance rates:",
                 accept_kappa / (it+1))
-            for k in range(dtheta):
-                print(
-                    f"kappa prior {k}:",
-                    kappa_priors[k].get_state()
-                )
-            print(
-                "delta_eta prior:",
-                delta_eta_prior.get_state()
-            )
+            # for k in range(dtheta):
+            #     print(
+            #         f"kappa prior {k}:",
+            #         kappa_priors[k].get_state()
+            #     )
+            # print(
+            #     "delta_eta prior:",
+            #     delta_eta_prior.get_state()
+            # )
             if orthogonalization_settings['orthogonalize_delta_eta']:
                 proj = G @ np.linalg.solve(G.T @ G, G.T @ delta_eta)
                 print("Projection norm (should be near 0):", np.linalg.norm(proj))

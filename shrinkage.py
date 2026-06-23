@@ -10,7 +10,7 @@ class ShrinkagePrior:
     def __init__(self, config):
         self.config = config
 
-    def log_prior(self, z):
+    def log_prior(self, z, x=None, k=None):
         raise NotImplementedError
     
     def sample_kappa_field(self, k, kappa_theta, delta_eta, theta, x_obs, y_obs, gp_eta, sigma2, mh_scale):
@@ -212,6 +212,7 @@ class GPPrior(ShrinkagePrior):
 
     def update_hyperparameters(
     self,
+    k,
     z,
     x_obs,
     mh_scales,
@@ -341,6 +342,7 @@ class LassoPrior(ShrinkagePrior):
 
     def update_hyperparameters(
     self,
+    k,
     z,
     x_obs=None,
     mh_scales=None,
@@ -497,6 +499,7 @@ class FusedLassoPrior(ShrinkagePrior):
 
     def update_hyperparameters(
         self,
+        k,
         z,
         x_obs=None,
         mh_scales=None,
@@ -558,59 +561,71 @@ class HorseshoePrior(ShrinkagePrior):
 
         super().__init__(config)
 
-        self.tau = config["tau_init"]
+        self.tau_init = config["tau_init"]
         self.tau_prior = config["tau_prior"]
 
-        # --- always define attributes ---
-        self.local_scale = None
-        self.local_aux = None
-        self.global_aux = None
-
-    # def _initialize(self, z):
-
-    #     n = len(z)
-
-    #     if self.local_scale is None:
-
-    #         self.local_scale = np.ones(n)
-    #         self.local_aux   = np.ones(n)
-    #         self.global_aux  = 1.0
+        # One independent hierarchy per embedded parameter
+        self.tau = {}
+        self.local_scale = {}
+        self.local_aux = {}
+        self.global_aux = {}
 
 
-    # def _ensure_initialized(self, z=None):
-    #     if self.local_scale is None:
-    #         if z is None:
-    #             raise ValueError(
-    #                 "HorseshoePrior not initialized. Call with data-dependent method first."
-    #             )
-    #         self._initialize(z)
+    def initialize(self, k, z):
 
-    def initialize(self, z):
+        if k in self.tau:
+            return
+
         n = len(z)
 
-        self.local_scale = np.ones(n)
-        self.local_aux = np.ones(n)
-        self.global_aux = 1.0
+        self.tau[k] = self.tau_init
+
+        self.local_scale[k] = np.ones(n)
+        self.local_aux[k] = np.ones(n)
+        self.global_aux[k] = 1.0
 
     def _sample_inverse_gamma(self, shape, scale):
         return 1.0 / np.random.gamma(shape, 1.0 / scale)
     
-    def update_local_scales(self, z):
+    def log_prior(self, k, z, x=None):
 
-        self.initialize(z)
+        self.initialize(k, z)
 
-        tau2 = self.tau**2
+        sigma = self.tau[k] * self.local_scale[k]
+
+        return np.sum(
+            -0.5*np.log(2*np.pi*sigma**2)
+            -0.5*(z/sigma)**2
+        )
+    
+    def update_local_scales(self, k, z):
+
+        # print("tau =", self.tau[k])
+
+        # print("lambda min =", self.local_scale[k].min())
+
+        # print("lambda max =", self.local_scale[k].max())
+
+        # print("sum =", np.sum(z**2/self.local_scale[k]**2))
+
+        # print("||z|| =", np.linalg.norm(z))
+        # print("max |z| =", np.max(np.abs(z)))
+
+        tau2 = self.tau[k]**2
 
         for i in range(len(z)):
 
             lam2 = self._sample_inverse_gamma(
+
                 shape=1.0,
-                scale=(z[i]**2)/(2*tau2) + 1/self.local_aux[i]
+
+                scale=(z[i]**2)/(2*tau2)
+                    + 1/self.local_aux[k][i]
             )
 
-            self.local_scale[i] = np.sqrt(lam2)
+            self.local_scale[k][i] = np.sqrt(lam2)
 
-    def update_global_scale(self, z):
+    def update_global_scale(self, k, z):
 
         p = len(z)
 
@@ -619,32 +634,22 @@ class HorseshoePrior(ShrinkagePrior):
             shape=(p+1)/2,
 
             scale=(
-                0.5*np.sum(z**2/self.local_scale**2)
-                + 1/self.global_aux
+                0.5*np.sum(
+                    z**2/self.local_scale[k]**2
+                )
+                + 1/self.global_aux[k]
             )
         )
 
-        self.tau = np.sqrt(tau2)
+        self.tau[k] = np.sqrt(tau2)
 
-        self.global_aux = self._sample_inverse_gamma(
+        self.global_aux[k] = self._sample_inverse_gamma(
 
             shape=1.0,
 
             scale=1 + 1/tau2
         )
 
-    def log_prior(self, z, x=None):
-
-        if self.local_scale is None:
-            self.local_scale = np.ones_like(z)
-
-        sigma = self.tau * self.local_scale
-
-        return np.sum(
-            -0.5*np.log(2*np.pi*sigma**2)
-            -0.5*(z/sigma)**2
-        )
-    
     def log_half_cauchy(x, scale=1.0):
 
         if np.any(x <= 0):
@@ -668,19 +673,26 @@ class HorseshoePrior(ShrinkagePrior):
         mh_scale
     ):
         
-        proposal = kappa_theta[k] + mh_scale*np.random.randn(len(x_obs))
+        self.initialize(k, kappa_theta[k])
+
+        proposal = (
+            kappa_theta[k]
+            + mh_scale
+            * np.sqrt(self.local_scale[k])
+            * np.random.randn(len(kappa_theta[k]))
+        )
 
         delta_prop = kappa_theta.copy()
         delta_prop[k] = proposal
 
         logpost_curr = (
             log_likelihood_embedded(y_obs, x_obs, theta, kappa_theta, delta_eta, gp_eta, sigma2)
-            + self.log_prior(kappa_theta[k])
+            + self.log_prior(k, kappa_theta[k])
         )
 
         logpost_prop = (
             log_likelihood_embedded(y_obs, x_obs, theta, delta_prop, delta_eta, gp_eta, sigma2)
-            + self.log_prior(proposal)
+            + self.log_prior(k, proposal)
         )
 
         log_alpha = logpost_prop-logpost_curr
@@ -729,29 +741,41 @@ class HorseshoePrior(ShrinkagePrior):
 
         return np.random.multivariate_normal(mu_post, Sigma_post)
     
-    def update_hyperparameters(self, z, x_obs=None, mh_scales=None, allow_singular_cov=None):
+    def update_hyperparameters(
+        self,
+        k,
+        z,
+        x_obs=None,
+        mh_scales=None,
+        allow_singular_cov=None,
+    ):
 
-        self.initialize(z)
+        self.initialize(k, z)
 
-        self.update_local_scales(z)
+        self.update_local_scales(k, z)
 
-        self.update_global_scale(z)
-
+        # update ν
         for i in range(len(z)):
-
-            self.local_aux[i] = self._sample_inverse_gamma(
+            self.local_aux[k][i] = self._sample_inverse_gamma(
                 shape=1.0,
-                scale=1 + 1/(self.local_scale[i]**2)
+                scale=1 + 1/(self.local_scale[k][i]**2)
             )
+
+        # update τ and ξ
+        self.update_global_scale(k, z)
     
     def get_state(self):
 
         return {
-        "tau": self.tau,
-        "lambda": None if self.local_scale is None else self.local_scale.copy(),
-        "nu": None if self.local_aux is None else self.local_aux.copy(),
-        "xi": getattr(self, "global_aux", None)
-    }
+
+            "tau": self.tau,
+
+            "lambda": self.local_scale,
+
+            "nu": self.local_aux,
+
+            "xi": self.global_aux
+        }
     
 
 class SpikeSlabPrior(ShrinkagePrior):
@@ -763,24 +787,216 @@ class SpikeSlabPrior(ShrinkagePrior):
         super().__init__(config)
 
         self.pi = config["pi_init"]
-        self.sigma2_slab = config["sigma2_slab_init"]
 
         self.pi_prior = config["pi_prior"]
-        self.sigma2_slab_prior = config["sigma2_slab_prior"]
 
-    def log_prior(self, z, x=None):
+        self.sigma_spike = config["sigma_spike"]
 
-        logp_spike = np.log(1 - self.pi) - 0.5 * np.log(2 * np.pi * 1e-6) - (z**2) / (2 * 1e-6)
-        logp_slab = np.log(self.pi) - 0.5 * np.log(2 * np.pi * self.sigma2_slab) - (z**2) / (2 * self.sigma2_slab)
+        self.sigma_slab = config["sigma_slab"]
 
-        return np.sum(np.logaddexp(logp_spike, logp_slab))
+        self.gamma = {}
+
+    def initialize(self, k, z):
+
+        if k in self.gamma:
+            return
+
+        self.gamma[k] = np.ones(len(z), dtype=int)
+
+    def log_prior(self, k, z, x=None):
+
+        self.initialize(k, z)
+
+        # print(type(self.gamma))
+        # print(type(self.gamma[k]))
+        # print(type(self.sigma_slab))
+        # print(type(self.sigma_spike))
+
+        sigma = np.where(
+            self.gamma[k],
+            self.sigma_slab,
+            self.sigma_spike
+        )
+
+        return np.sum(
+            -0.5*np.log(2*np.pi*sigma**2)
+            -0.5*(z/sigma)**2
+        )
     
-    def get_state(self):
+    def update_indicators(self, k, z):
 
-        return {
-            "pi": self.pi,
-            "sigma2_slab": self.sigma2_slab
-        }
+        self.initialize(k, z)
+
+        for i in range(len(z)):
+
+            slab_density = (
+                self.pi
+                * norm.pdf(
+                    z[i],
+                    0,
+                    self.sigma_slab
+                )
+            )
+
+            spike_density = (
+                (1-self.pi)
+                * norm.pdf(
+                    z[i],
+                    0,
+                    self.sigma_spike
+                )
+            )
+
+            p_slab = slab_density/(slab_density+spike_density)
+
+            self.gamma[k][i] = (
+                np.random.rand() < p_slab
+            )
+
+    def update_pi(self):
+
+        alpha = self.pi_prior["alpha"]
+        beta = self.pi_prior["beta"]
+
+        total_active = 0
+        total_count = 0
+
+        for g in self.gamma.values():
+
+            total_active += np.sum(g)
+
+            total_count += len(g)
+
+        self.pi = np.random.beta(
+            alpha + total_active,
+            beta + total_count - total_active
+    )
+        
+    def sample_kappa_field(
+    self,
+    k,
+    kappa_theta,
+    delta_eta,
+    theta,
+    x_obs,
+    y_obs,
+    gp_eta,
+    sigma2,
+    mh_scale
+    ):
+
+        self.initialize(k, kappa_theta[k])
+
+        proposal = (
+            kappa_theta[k]
+            + mh_scale*np.random.randn(
+                len(kappa_theta[k])
+            )
+        )
+
+        delta_prop = kappa_theta.copy()
+
+        delta_prop[k] = proposal
+
+        logpost_curr = (
+            log_likelihood_embedded(
+                y_obs,
+                x_obs,
+                theta,
+                kappa_theta,
+                delta_eta,
+                gp_eta,
+                sigma2
+            )
+            + self.log_prior(
+                k,
+                kappa_theta[k]
+            )
+        )
+
+        logpost_prop = (
+            log_likelihood_embedded(
+                y_obs,
+                x_obs,
+                theta,
+                delta_prop,
+                delta_eta,
+                gp_eta,
+                sigma2
+            )
+            + self.log_prior(
+                k,
+                proposal
+            )
+        )
+
+        log_alpha = (
+            logpost_prop
+            - logpost_curr
+        )
+
+        if np.log(np.random.rand()) < log_alpha:
+
+            kappa_theta[k] = proposal
+
+            return kappa_theta, True
+
+        return kappa_theta, False
+    
+    def sample_delta_eta_field(
+        self,
+        delta_eta,
+        x_obs,
+        y_obs,
+        theta,
+        kappa_theta,
+        gp_eta,
+        sigma2
+        ):
+            
+        No = len(x_obs)
+
+        # --- build covariance ---
+        K = rbf_kernel(x_obs, x_obs, ell=self.ell, var=self.var)
+        K += 1e-8 * np.eye(No)
+
+        # --- compute residual ---
+        r = np.zeros(No)
+
+        for i in range(No):
+            theta_star = theta + kappa_theta[:, i]
+            m_i, _ = eta_predict(x_obs[i], theta_star, gp_eta)
+            # print(f"m_i: {m_i:.3f}, y_obs[i]: {y_obs[i]}")
+            r[i] = y_obs[i][0] - m_i
+
+        # --- posterior ---
+        K_inv = np.linalg.inv(K)
+        Sigma_post = np.linalg.inv(K_inv + (1/sigma2)*np.eye(No))
+
+        mu_post = Sigma_post @ ((1/sigma2) * r)
+
+        return np.random.multivariate_normal(mu_post, Sigma_post)
+    
+    def update_hyperparameters(
+        self,
+        k,
+        z,
+        x_obs=None,
+        mh_scales=None,
+        allow_singular_cov=None
+    ):
+
+        self.update_indicators(k, z)
+
+        self.update_pi()
+    
+    
+def get_state(self):
+
+    return {
+        "pi": self.pi,
+        "gamma": self.gamma
+    }
     
 
 def create_prior(config):
