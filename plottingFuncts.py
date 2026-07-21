@@ -259,7 +259,8 @@ def plot_discrepancy_diagnostics(
     idx,
     dtheta,
     cross_validation_settings,
-    figures_directory=None,
+    holdout_data=None,
+    figure_path=None,
     figure_name="discrepancy_diagnostics.png",
     suptitle="Discrepancy Diagnostics",
 ):
@@ -283,6 +284,11 @@ def plot_discrepancy_diagnostics(
     # rows 1..dtheta -> one full-width subplot each for delta_theta[k]
     # last row -> one full-width subplot for posterior
     n_rows = 2 + dtheta
+
+    # add another row if holdout data is on
+    if cross_validation_settings.get("holdout_data", False) and holdout_data is not None:
+        n_rows += 1
+
     fig = plt.figure(figsize=(10, 3.2 * n_rows))
     gs = fig.add_gridspec(n_rows, 2)
 
@@ -332,6 +338,15 @@ def plot_discrepancy_diagnostics(
             else:
                 delta_known = np.zeros_like(x)
             ax2.plot(x, delta_known, label=r"$\delta_\eta^{\mathrm{true}}(x)$", linestyle="--", color="red")
+        elif known_delta_form == "linear" and form_config:
+            m = form_config.get("m", 0)
+            b = form_config.get("b", 0)
+            delta_known = m * x + b
+            ax2.plot(x, delta_known, label=r"$\delta_\eta^{\mathrm{true}}(x)$", linestyle="--", color="red")
+        elif known_delta_form == "polynomial" and form_config:
+            coeffs = form_config.get("coeffs", [])
+            delta_known = np.polyval(coeffs, x)
+            ax2.plot(x, delta_known, label=r"$\delta_\eta^{\mathrm{true}}(x)$", linestyle="--", color="red")
         
     ax2.axhline(0, linestyle="--")
     ax2.set_title(r"Additive Discrepancy $\delta_{\eta}(x)$")
@@ -380,6 +395,11 @@ def plot_discrepancy_diagnostics(
                     else:
                         theta_known = np.zeros_like(x)
                 ax_k.plot(x, theta_known, linestyle="--", color="red", label=rf"$\kappa_{{{k}}}^{{\mathrm{{true}}}}(x)$")
+            elif known_theta_form == "linear" and "m" in form_config and "b" in form_config:
+                m = form_config.get("m", 0)
+                b = form_config.get("b", 0)
+                theta_known = (m * x + b) - theta_fixed_phys[k]
+                ax_k.plot(x, theta_known, linestyle="--", color="red", label=rf"$\kappa_{{{k}}}^{{\mathrm{{true}}}}(x)$")
 
         ax_k.axhline(0, linestyle="--", color="gray", label=r"$\theta_0$")
         ax_k.set_title(rf"Calibration discrepancy: $\kappa_{{{k}}}(x)$")
@@ -402,10 +422,46 @@ def plot_discrepancy_diagnostics(
     ax3.set_ylabel("y")
     ax3.legend()
 
+    # if holdout data is available, plot posterior predictions for holdout data
+    if cross_validation_settings.get("holdout_data", False) and holdout_data is not None:
+        x_holdout = holdout_data['x']
+        y_holdout = holdout_data['y']
+        y_holdout_post_mean = holdout_data['y_holdout_post_mean']
+        y_holdout_post_std = holdout_data['y_holdout_post_std']
+        y_holdout_post_var = holdout_data['y_holdout_post_var']
+
+
+        ax4 = fig.add_subplot(gs[2+dtheta,:])
+
+        ax4.scatter(
+            x_holdout,
+            y_holdout,
+            color="black",
+            label="Holdout data"
+        )
+
+        ax4.plot(
+            x_holdout,
+            y_holdout_post_mean,
+            label="Posterior prediction"
+        )
+
+        ax4.fill_between(
+            x_holdout,
+            y_holdout_post_mean - 2*np.sqrt(y_holdout_post_var),
+            y_holdout_post_mean + 2*np.sqrt(y_holdout_post_var),
+            alpha=0.3
+        )
+
+        ax4.set_title(
+            "Holdout Posterior Prediction"
+        )
+        ax4.legend()
+
     plt.suptitle(suptitle)
     plt.tight_layout()
     # plt.show()
-    plt_path = os.path.join(figures_directory, figure_name)
+    plt_path = os.path.join(figure_path, figure_name)
     plt.savefig(plt_path, dpi=150)
     
 

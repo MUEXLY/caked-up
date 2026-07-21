@@ -1,9 +1,9 @@
 {
     "calibration_settings":{
 
-        "N_mcmc": 1000,
+        "N_mcmc": 10000,
 
-        "burn_in": 100,
+        "burn_in": 1000,
 
         "adapt_interval": 50,
 
@@ -126,24 +126,29 @@
     },
     "input_settings":{
 
-        "model_data_path": "./studyNo1/modelData/",
+        "model_data_path": "/home/liammyhill/gitLocal/lmyhill/embeddedModel_toyProb/10pct/modelData/",
 
-        "obs_data_path": "./studyNo1/observationData/",
+        "obs_data_path": "/home/liammyhill/gitLocal/lmyhill/embeddedModel_toyProb/10pct/observationData/",
 
         "input_delimiter": ",",
 
-        "input_header": true
+        "input_header": false
     },
     "cross_validation_settings":{
 
-        "conduct_cross_validation": false,
+        "conduct_cross_validation": true,
 
-        "known_theta_form": "trig_funct",
+        "known_theta_form": "linear",
 
         "known_theta_form_params": {
 
             "constant": {
                 "values": [1.5,1.75]
+            },
+
+            "linear": {
+                "m": [0.8],
+                "b": [0.5]
             },
 
             "trig_funct": {
@@ -152,7 +157,7 @@
 
         },
 
-        "known_delta_form": "trig_funct",
+        "known_delta_form": "polynomial",
 
         "known_delta_form_params": {
 
@@ -160,11 +165,31 @@
                 "coeff": 0.5,
                 "exponent": 0.5
             },
+
+             "linear": {
+                "m": 0.8,
+                "b": 0.5
+            },
+
+            "polynomial": {
+                "coeffs": [0.8, 2, 1.8]
+            },
+
             "trig_funct": {
                 "function": "cos"
             }
+        },
+
+        "holdout_data": true,
+
+        "holdout_data_paths": 
+        {
+            "appDomain_holdout":"/home/liammyhill/gitLocal/lmyhill/embeddedModel_toyProb/10pct/observationData/appDomain_holdout.txt",
+            "observationData_holdout":"/home/liammyhill/gitLocal/lmyhill/embeddedModel_toyProb/10pct/observationData/observationData_holdout.txt"
         }
+
     },
+    
     "output_settings":{
 
         "figures_path": "figures/",
