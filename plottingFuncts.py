@@ -748,7 +748,7 @@ def discrepancy_variance_decomposition(
         if figure_path is not None:
             plt.savefig(f"{figure_path}/{save_name}", dpi=300)
 
-        plt.show()
+        # plt.show()
 
     return {
         "var_total": var_total,
@@ -866,7 +866,7 @@ def plot_relative_contributions(
             bbox_inches='tight'
         )
 
-    plt.show()
+    # plt.show()
 
 def eta_predict(x, theta_star, gp_eta):
 

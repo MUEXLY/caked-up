@@ -1,0 +1,192 @@
+{
+    "calibration_settings": {
+        "N_mcmc": 10000,
+        "burn_in": 1000,
+        "adapt_interval": 50,
+        "posterior_predictive_samples": 200,
+        "theta_initialization": "fixed",
+        "allow_singular_cov": true,
+        "target_accept": 0.35,
+        "mh_scale_kappa_prior": 0.01,
+        "mh_scales": {
+            "log_ell_kappa": 0.1,
+            "log_var_kappa": 0.1
+        },
+        "shrinkage_models": {
+            "delta_eta": {
+                "shrinkage_prior": "gp",
+                "gp": {
+                    "ell_init": 0.1,
+                    "var_init": 0.3,
+                    "ell_prior": {
+                        "mu": 0.3,
+                        "sigma": 0.5
+                    },
+                    "var_prior": {
+                        "mu": 0.05,
+                        "sigma": 0.5
+                    }
+                }
+            },
+            "kappa": {
+                "shrinkage_prior": "spike_slab",
+                "groups": false,
+                "gp": {
+                    "ell_init": 10,
+                    "var_init": 0.1,
+                    "ell_prior": {
+                        "mu": 0.3,
+                        "sigma": 0.5
+                    },
+                    "var_prior": {
+                        "mu": 0.05,
+                        "sigma": 0.5
+                    }
+                },
+                "lasso": {
+                    "lambda_init": 0.1,
+                    "lambda_prior": {
+                        "shape": 2.0,
+                        "rate": 1.0
+                    }
+                },
+                "fused_lasso": {
+                    "lambda_init": 0.1,
+                    "lambda_prior": {
+                        "shape": 2.0,
+                        "rate": 1.0
+                    }
+                },
+                "horseshoe": {
+                    "tau_init": 0.1,
+                    "tau_prior": {
+                        "mu": 0.3,
+                        "sigma": 0.5
+                    }
+                },
+                "spike_slab": {
+                    "pi_init": 0.5,
+                    "pi_prior": {
+                        "alpha": 0.5,
+                        "beta": 0.5
+                    },
+                    "sigma_spike": 0.3,
+                    "sigma_slab": 1.0
+                },
+                "kappa_groups": [
+                    {
+                        "indices": [
+                            0,
+                            1
+                        ],
+                        "method": "gp"
+                    },
+                    {
+                        "indices": [
+                            2
+                        ],
+                        "method": "spike_slab"
+                    }
+                ]
+            }
+        },
+        "orthogonalization_settings": {
+            "orthogonalize_delta_eta": true,
+            "theta_epsilon": 0.01
+        },
+        "sigma2_prior_val": 0.002,
+        "sigma2_prior_vals": {
+            "a": 2.0,
+            "b": 0.01
+        }
+    },
+    "input_settings": {
+        "model_data_path": "/home/liammyhill/gitLocal/lmyhill/embeddedModel_toyProb/modelData/",
+        "obs_data_path": "/home/liammyhill/gitLocal/MUEXLY/caked-up/eval_holdout/holdout_evaluation/data/holdout_10pct_rep02/observationData/",
+        "input_delimiter": ",",
+        "input_header": false
+    },
+    "cross_validation_settings": {
+        "conduct_cross_validation": true,
+        "known_theta_form": "linear",
+        "known_theta_form_params": {
+            "constant": {
+                "values": [
+                    1.5,
+                    1.75
+                ]
+            },
+            "linear": {
+                "m": [
+                    0.8
+                ],
+                "b": [
+                    0.5
+                ]
+            },
+            "trig_funct": {
+                "functions": [
+                    "sin",
+                    "cos"
+                ]
+            }
+        },
+        "known_delta_form": "polynomial",
+        "known_delta_form_params": {
+            "power_law": {
+                "coeff": 0.5,
+                "exponent": 0.5
+            },
+            "linear": {
+                "m": 0.8,
+                "b": 0.5
+            },
+            "polynomial": {
+                "coeffs": [
+                    0.8,
+                    2,
+                    1.8
+                ]
+            },
+            "trig_funct": {
+                "function": "cos"
+            }
+        },
+        "holdout_data": true,
+        "holdout_data_paths": {
+            "appDomain_holdout": "/home/liammyhill/gitLocal/MUEXLY/caked-up/eval_holdout/holdout_evaluation/data/holdout_10pct_rep02/observationData/appDomain_holdout.txt",
+            "observationData_holdout": "/home/liammyhill/gitLocal/MUEXLY/caked-up/eval_holdout/holdout_evaluation/data/holdout_10pct_rep02/observationData/observationData_holdout.txt"
+        }
+    },
+    "output_settings": {
+        "figures_path": "/home/liammyhill/gitLocal/MUEXLY/caked-up/eval_holdout/holdout_evaluation/results/holdout_10pct_rep02/figures",
+        "figure_options": {
+            "data_priors_realspace": true,
+            "data_priors_normalized": true,
+            "PCA_plot": true,
+            "radar_plot": true,
+            "radar_animation": true,
+            "eta_emulator_prior": true,
+            "posterior_predict_normalized": true,
+            "posterior_predict_physical": true,
+            "delta_posterior_normalized": true,
+            "delta_posterior_physical": true,
+            "acceptance_trajectory": true,
+            "step_size_plot": true,
+            "variance_decomposition": true,
+            "relative_contributions": true
+        },
+        "results_path": "/home/liammyhill/gitLocal/MUEXLY/caked-up/eval_holdout/holdout_evaluation/results/holdout_10pct_rep02",
+        "results_options": {
+            "normalization_parameters": true,
+            "parameter_traces": true,
+            "posterior_predictive_samples": true,
+            "save_calibrated_parameters": true,
+            "save_calibrated_parameters_csv": true,
+            "save_calibrated_parameters_json": true,
+            "output_normalized_results": true,
+            "output_physical_results": true
+        },
+        "evaluation_label": "holdout_10pct_rep02"
+    }
+}

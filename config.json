@@ -126,9 +126,9 @@
     },
     "input_settings":{
 
-        "model_data_path": "/home/liammyhill/gitLocal/lmyhill/embeddedModel_toyProb/10pct/modelData/",
+        "model_data_path": "/home/liammyhill/gitLocal/lmyhill/embeddedModel_toyProb/modelData/",
 
-        "obs_data_path": "/home/liammyhill/gitLocal/lmyhill/embeddedModel_toyProb/10pct/observationData/",
+        "obs_data_path": "/home/liammyhill/gitLocal/lmyhill/embeddedModel_toyProb/observationData/",
 
         "input_delimiter": ",",
 
