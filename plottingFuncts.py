@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
+from functs import get_theta_at_obs, eta_predict
 
 def generate_rawData_figure(model_data, obs_data, figures_directory, figure_name="raw_data_theta_parameters.png", suptitle="Raw Data Colored by Theta Parameters"):
     """
@@ -258,6 +259,7 @@ def plot_discrepancy_diagnostics(
     kappa_std,
     idx,
     dtheta,
+    calibration_settings,
     cross_validation_settings,
     holdout_data=None,
     figure_path=None,
@@ -274,10 +276,35 @@ def plot_discrepancy_diagnostics(
     y_post_var = np.asarray(y_post_var).ravel()
 
     # If prior arrays are not on x_obs, recompute at x_obs using gp_eta + theta_fixed
+    # if y_prior_mean.shape[0] != x.shape[0] or y_prior_var.shape[0] != x.shape[0]:
+    #     Z_obs = np.hstack([x.reshape(-1, 1), np.tile(theta_fixed, (x.shape[0], 1))])
+    #     y_prior_mean = gp_eta.predict(Z_obs)
+    #     y_prior_var = np.diag(gp_eta.predict(Z_obs, return_cov=True)[1])
+
+    #diagnostic print statements
+    print("x.shape:", x.shape)
+    print("y_prior_mean.shape:", y_prior_mean.shape)
+    print("theta_fixed.shape:", np.shape(theta_fixed))
+
+    # If prior arrays are not on x_obs, recompute at x_obs using gp_eta + theta_fixed
     if y_prior_mean.shape[0] != x.shape[0] or y_prior_var.shape[0] != x.shape[0]:
-        Z_obs = np.hstack([x.reshape(-1, 1), np.tile(theta_fixed, (x.shape[0], 1))])
+
+        theta_fixed = np.asarray(theta_fixed)
+
+        if theta_fixed.ndim == 1:
+            theta_block = np.tile(theta_fixed, (x.shape[0], 1))
+        else:
+            theta_block = theta_fixed
+
+        Z_obs = np.hstack([
+            x.reshape(-1, 1),
+            theta_block
+        ])
+
         y_prior_mean = gp_eta.predict(Z_obs)
-        y_prior_var = np.diag(gp_eta.predict(Z_obs, return_cov=True)[1])
+        y_prior_var = np.diag(
+            gp_eta.predict(Z_obs, return_cov=True)[1]
+        )
 
     # Layout:
     # row 0 -> 2 columns (ax1, ax2)
@@ -355,56 +382,140 @@ def plot_discrepancy_diagnostics(
     ax2.legend()
 
     # Following subplots in a single column (full width)
+    # Following subplots in a single column (full width)
+    theta_settings = calibration_settings.get("theta_settings", {})
+    theta_init = theta_settings.get("theta_initialization", "fixed")
+
     for k in range(dtheta):
+
         ax_k = fig.add_subplot(gs[1 + k, :])
-        # delta_theta_k_mean = delta_theta_chain[idx, k, :].mean(axis=0)
-        # delta_theta_k_std = delta_theta_chain[idx, k, :].std(axis=0)
 
         delta_theta_k_mean = kappa_mean[k, :]
         delta_theta_k_std  = kappa_std[k, :]
 
-        ax_k.plot(x, delta_theta_k_mean, label=f"\kappa_{k} mean")
-        ax_k.fill_between(
-            x,
-            delta_theta_k_mean - 2 * delta_theta_k_std,
-            delta_theta_k_mean + 2 * delta_theta_k_std,
-            alpha=0.3
-        )
-        # Fix previously-added curve label formatting
-        if ax_k.lines:
-            ax_k.lines[-1].set_label(rf"$\kappa_{{{k}}}(x)$ mean")
-            
-        if cross_validation_settings['conduct_cross_validation'] is True and "known_theta_form" in cross_validation_settings:
-            known_theta_form = cross_validation_settings.get("known_theta_form")
-            known_theta_form_params = cross_validation_settings.get("known_theta_form_params", {})
-            form_config = known_theta_form_params.get(known_theta_form, {})
+        # -------------------------------------------------------------
+        # Plot calibrated parameter
+        # -------------------------------------------------------------
+        if theta_init == "fixed":
 
-            if known_theta_form == "constant" and "values" in form_config:
-                known_theta_values = form_config.get("values")
-                if k < len(known_theta_values):
-                    theta_known = known_theta_values[k] - theta_fixed_phys[k]
-                    ax_k.axhline(theta_known, linestyle="--", color="red", label=rf"$\kappa_{{{k}}}^{{\mathrm{{true}}}}$")
-            elif known_theta_form == "trig_funct" and "functions" in form_config:
-                trig_functions = form_config.get("functions")
-                if k < len(trig_functions):
-                    func_name = trig_functions[k]
-                    if func_name == "sin":
-                        theta_known = np.sin(x) - theta_fixed_phys[k]
-                    elif func_name == "cos":
-                        theta_known = np.cos(x) - theta_fixed_phys[k]
-                    else:
-                        theta_known = np.zeros_like(x)
-                ax_k.plot(x, theta_known, linestyle="--", color="red", label=rf"$\kappa_{{{k}}}^{{\mathrm{{true}}}}(x)$")
-            elif known_theta_form == "linear" and "m" in form_config and "b" in form_config:
+            y_mean = delta_theta_k_mean
+            y_lower = y_mean - 2 * delta_theta_k_std
+            y_upper = y_mean + 2 * delta_theta_k_std
+
+            ax_k.plot(x, y_mean, label=rf"$\kappa_{{{k}}}(x)$")
+            ax_k.fill_between(x, y_lower, y_upper, alpha=0.3)
+
+            ax_k.axhline(
+                0,
+                linestyle="--",
+                color="gray",
+                label=r"$\theta_0$"
+            )
+
+            ax_k.set_title(rf"Calibration discrepancy: $\kappa_{{{k}}}(x)$")
+            ax_k.set_ylabel(rf"$\kappa_{{{k}}}(x)$")
+
+        elif theta_init == "compositional":
+
+            theta_base = theta_fixed_phys[k]
+
+            y_mean = theta_base + delta_theta_k_mean
+            y_lower = y_mean - 2 * delta_theta_k_std
+            y_upper = y_mean + 2 * delta_theta_k_std
+
+            ax_k.plot(
+                x,
+                theta_base,
+                "k--",
+                linewidth=2,
+                label=rf"$\theta_{{{k}}}^{{base}}(x)$"
+            )
+
+            ax_k.plot(
+                x,
+                y_mean,
+                linewidth=2,
+                label=rf"$\theta_{{{k}}}(x)+\kappa_{{{k}}}(x)$"
+            )
+
+            ax_k.fill_between(x, y_lower, y_upper, alpha=0.3)
+
+            ax_k.set_title(rf"Calibrated parameter: $\theta_{{{k}}}(x)$")
+            ax_k.set_ylabel(rf"$\theta_{{{k}}}(x)$")
+
+        # -------------------------------------------------------------
+        # Cross-validation truth
+        # -------------------------------------------------------------
+        if cross_validation_settings["conduct_cross_validation"] and \
+        "known_theta_form" in cross_validation_settings:
+
+            known_theta_form = cross_validation_settings.get("known_theta_form")
+            form_config = cross_validation_settings.get(
+                "known_theta_form_params", {}
+            ).get(known_theta_form, {})
+
+            theta_known = None
+
+            if known_theta_form == "constant":
+
+                values = form_config.get("values", [])
+                if k < len(values):
+                    theta_known = values[k]
+
+            elif known_theta_form == "trig_funct":
+
+                funcs = form_config.get("functions", [])
+                if k < len(funcs):
+                    if funcs[k] == "sin":
+                        theta_known = np.sin(x)
+                    elif funcs[k] == "cos":
+                        theta_known = np.cos(x)
+
+            elif known_theta_form == "linear":
+
                 m = form_config.get("m", 0)
                 b = form_config.get("b", 0)
-                theta_known = (m * x + b) - theta_fixed_phys[k]
-                ax_k.plot(x, theta_known, linestyle="--", color="red", label=rf"$\kappa_{{{k}}}^{{\mathrm{{true}}}}(x)$")
+                theta_known = m * x + b
 
-        ax_k.axhline(0, linestyle="--", color="gray", label=r"$\theta_0$")
-        ax_k.set_title(rf"Calibration discrepancy: $\kappa_{{{k}}}(x)$")
+            if theta_known is not None:
+
+                if theta_init == "fixed":
+
+                    theta_known = theta_known - theta_fixed_phys[k]
+
+                    if np.isscalar(theta_known):
+                        ax_k.axhline(
+                            theta_known,
+                            color="red",
+                            linestyle="--",
+                            label=rf"$\kappa_{{{k}}}^{{true}}$"
+                        )
+                    else:
+                        ax_k.plot(
+                            x,
+                            theta_known,
+                            "r--",
+                            label=rf"$\kappa_{{{k}}}^{{true}}(x)$"
+                        )
+
+                else:
+
+                    if np.isscalar(theta_known):
+                        ax_k.axhline(
+                            theta_known,
+                            color="red",
+                            linestyle="--",
+                            label=rf"$\theta_{{{k}}}^{{true}}$"
+                        )
+                    else:
+                        ax_k.plot(
+                            x,
+                            theta_known,
+                            "r--",
+                            label=rf"$\theta_{{{k}}}^{{true}}(x)$"
+                        )
+
         ax_k.set_xlabel("x")
-        ax_k.set_ylabel(rf"$\kappa_{{{k}}}(x)$")
         ax_k.legend()
 
     # Bottom: Full Posterior (also full width)
@@ -629,9 +740,11 @@ def discrepancy_variance_decomposition(
         # ------------------------------------------------------------
         y_samps = []
 
+        theta_i = get_theta_at_obs(theta_fixed, i)
+
         for s in idx:
             kappa_s = kappa_theta_chain[s, :, i]
-            theta_star = theta_fixed + kappa_s
+            theta_star = theta_i + kappa_s
             delta_s = delta_eta_chain[s, i]
 
             m, v = eta_predict(x_obs[i], theta_star, gp_eta)
@@ -644,7 +757,7 @@ def discrepancy_variance_decomposition(
         # ------------------------------------------------------------
         # 2. Emulator-only uncertainty (GP conditional variance)
         # ------------------------------------------------------------
-        theta_star_mean = theta_fixed + kappa_mean[:, i]
+        theta_star_mean = theta_i + kappa_mean[:, i]
         _, v_gp = eta_predict(x_obs[i], theta_star_mean, gp_eta)
         var_emulator[i] = v_gp
 
@@ -653,7 +766,7 @@ def discrepancy_variance_decomposition(
         # ------------------------------------------------------------
         y_kappa = []
         for s in idx:
-            theta_star = theta_fixed + kappa_theta_chain[s, :, i]
+            theta_star = theta_i + kappa_theta_chain[s, :, i]
             m, _ = eta_predict(x_obs[i], theta_star, gp_eta)
             y_kappa.append(m + delta_eta_mean[i])
 
@@ -664,7 +777,8 @@ def discrepancy_variance_decomposition(
         # ------------------------------------------------------------
         y_delta = []
         for s in idx:
-            m, _ = eta_predict(x_obs[i], theta_fixed + kappa_mean[:, i], gp_eta)
+            theta_star = theta_i + kappa_theta_chain[s, :, i]
+            m, _ = eta_predict(x_obs[i], theta_star, gp_eta)
             y_delta.append(m + delta_eta_chain[s, i])
 
         var_delta[i] = np.var(y_delta)
@@ -678,7 +792,7 @@ def discrepancy_variance_decomposition(
 
         for s in idx:
             kappa_s = kappa_theta_chain[s, :, i]
-            theta_star = theta_fixed + kappa_s
+            theta_star = theta_i + kappa_s
             delta_s = delta_eta_chain[s, i]
 
             m, _ = eta_predict(x_obs[i], theta_star, gp_eta)
@@ -693,7 +807,7 @@ def discrepancy_variance_decomposition(
 
         for s in idx:
             kappa_s = kappa_theta_chain[s, :, i]
-            theta_star = theta_fixed + kappa_s
+            theta_star = theta_i + kappa_s
 
             _, v = eta_predict(x_obs[i], theta_star, gp_eta)
             gp_vars.append(v)

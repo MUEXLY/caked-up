@@ -197,7 +197,8 @@ class GPPrior(ShrinkagePrior):
         r = np.zeros(No)
 
         for i in range(No):
-            theta_star = theta + kappa_theta[:, i]
+            theta_i=get_theta_at_obs(theta, i)
+            theta_star = theta_i + kappa_theta[:, i]
             m_i, _ = eta_predict(x_obs[i], theta_star, gp_eta)
             # print(f"m_i: {m_i:.3f}, y_obs[i]: {y_obs[i]}")
             r[i] = y_obs[i][0] - m_i
@@ -326,7 +327,8 @@ class LassoPrior(ShrinkagePrior):
         r = np.zeros(No)
 
         for i in range(No):
-            theta_star = theta + kappa_theta[:, i]
+            theta_i=get_theta_at_obs(theta, i)
+            theta_star = theta_i + kappa_theta[:, i]
             m_i, _ = eta_predict(x_obs[i], theta_star, gp_eta)
             # print(f"m_i: {m_i:.3f}, y_obs[i]: {y_obs[i]}")
             r[i] = y_obs[i][0] - m_i
@@ -473,7 +475,8 @@ class FusedLassoPrior(ShrinkagePrior):
 
         for i in range(No):
 
-            theta_star = theta + kappa_theta[:, i]
+            theta_i = get_theta_at_obs(theta, i)
+            theta_star = theta_i + kappa_theta[:, i]
 
             m_i, _ = eta_predict(
                 x_obs[i],
@@ -728,7 +731,8 @@ class HorseshoePrior(ShrinkagePrior):
         r = np.zeros(No)
 
         for i in range(No):
-            theta_star = theta + kappa_theta[:, i]
+            theta_i = get_theta_at_obs(theta, i)
+            theta_star = theta_i + kappa_theta[:, i]
             m_i, _ = eta_predict(x_obs[i], theta_star, gp_eta)
             # print(f"m_i: {m_i:.3f}, y_obs[i]: {y_obs[i]}")
             r[i] = y_obs[i][0] - m_i
@@ -964,7 +968,8 @@ class SpikeSlabPrior(ShrinkagePrior):
         r = np.zeros(No)
 
         for i in range(No):
-            theta_star = theta + kappa_theta[:, i]
+            theta_i = get_theta_at_obs(theta, i)
+            theta_star = theta_i + kappa_theta[:, i]
             m_i, _ = eta_predict(x_obs[i], theta_star, gp_eta)
             # print(f"m_i: {m_i:.3f}, y_obs[i]: {y_obs[i]}")
             r[i] = y_obs[i][0] - m_i

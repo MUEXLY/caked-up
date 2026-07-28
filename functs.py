@@ -102,7 +102,8 @@ def gibbs_sigma2(y_obs, x_obs, theta, delta_theta, delta_eta, gp_eta, a, b):
     resid = np.zeros_like(y_obs)
 
     for i in range(len(y_obs)):
-        theta_star = theta + delta_theta[:, i]
+        theta_i = get_theta_at_obs(theta, i)
+        theta_star = theta_i + delta_theta[:, i]
         m_i, _ = eta_predict(x_obs[i], theta_star, gp_eta)
         resid[i] = y_obs[i] - (m_i + delta_eta[i])
 
@@ -158,7 +159,8 @@ def log_likelihood_embedded(y_obs, x_obs, theta, delta_theta,delta_eta, gp_eta, 
 
     for i in range(N):
 
-        theta_star = theta + delta_theta[:, i]
+        theta_i = get_theta_at_obs(theta, i)
+        theta_star = theta_i + delta_theta[:, i]
         # m_i, _ = eta_predict(x_obs[i], theta_star, gp_eta)
 
         m_i, s2_i = eta_predict(
@@ -224,17 +226,60 @@ def log_likelihood_embedded(y_obs, x_obs, theta, delta_theta,delta_eta, gp_eta, 
     
 
 # orthogonalization functions
+# def compute_sensitivities(x_obs, theta_fixed, gp_eta, eps=1e-2):
+#     No = len(x_obs)
+#     dtheta = len(theta_fixed)
+
+#     G = np.zeros((No, dtheta))
+
+#     for i, x in enumerate(x_obs):
+#         for k in range(dtheta):
+
+#             theta_plus = theta_fixed.copy()
+#             theta_minus = theta_fixed.copy()
+
+#             theta_plus[k] += eps
+#             theta_minus[k] -= eps
+
+#             m_plus, _ = eta_predict(x, theta_plus, gp_eta)
+#             m_minus, _ = eta_predict(x, theta_minus, gp_eta)
+
+#             G[i, k] = (m_plus - m_minus) / (2 * eps)
+
+#     return G
+
 def compute_sensitivities(x_obs, theta_fixed, gp_eta, eps=1e-2):
+    """
+    Compute dη/dθ at each observation.
+
+    Parameters
+    ----------
+    theta_fixed : ndarray
+        Either
+            (dtheta,)      for fixed initialization
+        or
+            (No, dtheta)   for compositional initialization.
+    """
+
     No = len(x_obs)
-    dtheta = len(theta_fixed)
+
+    theta_fixed = np.asarray(theta_fixed)
+
+    if theta_fixed.ndim == 1:
+        dtheta = len(theta_fixed)
+    else:
+        dtheta = theta_fixed.shape[1]
 
     G = np.zeros((No, dtheta))
 
     for i, x in enumerate(x_obs):
+
+        theta_i = get_theta_at_obs(theta_fixed, i)
+
         for k in range(dtheta):
 
-            theta_plus = theta_fixed.copy()
-            theta_minus = theta_fixed.copy()
+            theta_plus = theta_i.copy()
+            theta_minus = theta_i.copy()
 
             theta_plus[k] += eps
             theta_minus[k] -= eps
@@ -314,7 +359,7 @@ def compute_relative_contributions(
             # ----------------------------------------------------
             m_base, _ = eta_predict(
                 x_obs[i],
-                theta_fixed,
+                get_theta_at_obs(theta_fixed, i),
                 gp_eta
             )
 
@@ -322,7 +367,7 @@ def compute_relative_contributions(
             # κ-shifted emulator
             # ----------------------------------------------------
             theta_star = (
-                theta_fixed
+                get_theta_at_obs(theta_fixed, i)
                 + kappa_theta_chain[s, :, i]
             )
 
@@ -367,3 +412,26 @@ def compute_relative_contributions(
         "full_mean": full.mean(axis=0),
         "full_std": full.std(axis=0),
     }
+
+def get_theta_at_obs(theta_fixed, i):
+    """
+    Returns the normalized theta vector for observation i.
+
+    Parameters
+    ----------
+    theta_fixed : ndarray
+        Either shape (dtheta,) for fixed calibration or
+        (No, dtheta) for compositional calibration.
+    i : int
+
+    Returns
+    -------
+    ndarray
+        Shape (dtheta,)
+    """
+    theta_fixed = np.asarray(theta_fixed)
+
+    if theta_fixed.ndim == 1:
+        return theta_fixed
+
+    return theta_fixed[i]

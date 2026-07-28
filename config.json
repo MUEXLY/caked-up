@@ -1,7 +1,7 @@
 {
     "calibration_settings":{
 
-        "N_mcmc": 10000,
+        "N_mcmc": 1000,
 
         "burn_in": 1000,
 
@@ -9,7 +9,19 @@
 
         "posterior_predictive_samples": 200,
 
-        "theta_initialization":"fixed",
+        "theta_settings": {
+            "theta_initialization":"fixed",
+
+            "fixed_settings": {
+                "use_mean": true,
+                "fixed_values": [0.5, 0.5],
+                "fixed_labels": ["theta_1", "theta_2"]
+            },
+
+            "compositional_settings":{
+                "compositional_calibration": true
+            }
+        },
 
         "allow_singular_cov": true,
 
