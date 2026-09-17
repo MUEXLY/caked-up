@@ -4,6 +4,16 @@ import matplotlib.pyplot as plt
 import os
 from functs import get_theta_at_obs, eta_predict
 
+
+def _domain_matrix(values):
+    values = np.asarray(values, dtype=float)
+    return values.reshape(-1, 1) if values.ndim == 1 else values
+
+
+def _domain_labels(columns, n):
+    labels = [str(c) for c in columns]
+    return labels if len(labels) == n else [f"x_{j}" for j in range(n)]
+
 def generate_rawData_figure(model_data, obs_data, figures_directory, figure_name="raw_data_theta_parameters.png", suptitle="Raw Data Colored by Theta Parameters"):
     """
     Create subplots for each theta parameter showing:
@@ -26,40 +36,46 @@ def generate_rawData_figure(model_data, obs_data, figures_directory, figure_name
     
     # Use first y column as calibration metric
     y_col = model_y_columns[0]
-    x_col = model_x_columns[0]
+    x_values = _domain_matrix(model_data[model_x_columns].values)
+    x_obs_values = (
+        _domain_matrix(obs_data[observation_x_columns].values)
+        if obs_data is not None and observation_x_columns else None
+    )
+    n_domain = x_values.shape[1]
     
     # Create subplot grid for theta parameters
     n_theta = len(theta_columns)
-    n_cols = int(np.ceil(np.sqrt(n_theta)))
-    n_rows = int(np.ceil(n_theta / n_cols))
+    n_cols = n_domain
+    n_rows = n_theta
     
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 4*n_rows))
     axes = np.atleast_1d(axes).flatten()
     
     for idx, theta_col in enumerate(theta_columns):
-        ax = axes[idx]
+        for j in range(n_domain):
+            ax = axes[idx * n_domain + j]
         
         # Scatter plot colored by theta parameter value
-        scatter = ax.scatter(model_data[x_col], model_data[y_col], 
+            scatter = ax.scatter(x_values[:, j], model_data[y_col],
                             c=model_data[theta_col], cmap='viridis', 
                             alpha=0.6, s=50, edgecolors='black', linewidth=0.5)
         
         # Plot observed data
-        if obs_data is not None and observation_y_columns and observation_y_columns[0] in obs_data.columns and observation_x_columns and observation_x_columns[0] in obs_data.columns:
-            ax.scatter(obs_data[observation_x_columns[0]], obs_data[observation_y_columns[0]], color='red', label='Observed Data', alpha=0.8, s=30, edgecolors='black')
+            if obs_data is not None and observation_y_columns and x_obs_values is not None:
+                ax.scatter(x_obs_values[:, j], obs_data[observation_y_columns[0]], color='red', label='Observed Data', alpha=0.8, s=30, edgecolors='black')
         
-        ax.set_xlabel(f'{x_col}')
-        ax.set_ylabel(f'{y_col}')
-        ax.set_title(f'{y_col} colored by {theta_col}')
-        ax.grid(True, alpha=0.3)
-        ax.legend()
+            ax.set_xlabel(f'{model_x_columns[j]}')
+            ax.set_ylabel(f'{y_col}')
+            ax.set_title(f'{y_col} vs {model_x_columns[j]}, colored by {theta_col}')
+            ax.grid(True, alpha=0.3)
+            ax.legend()
         
         # Add colorbar for each subplot
-        cbar = plt.colorbar(scatter, ax=ax)
-        cbar.set_label(theta_col)
+            cbar = plt.colorbar(scatter, ax=ax)
+            cbar.set_label(theta_col)
     
     # Hide unused subplots
-    for idx in range(n_theta, len(axes)):
+    for idx in range(n_theta * n_domain, len(axes)):
         axes[idx].set_visible(False)
     
     plt.tight_layout()
@@ -166,11 +182,12 @@ def plot_delta_jump_sizes(delta_chain, figures_directory=None):
 def plot_emulator_prior(y_prior_mean, y_prior_var, model_data, model_normalized, reverse_normalization, figures_directory=None, output_directory=None):
     
     # ---- normalized ----
-    x_sim_norm = model_normalized[[col for col in model_normalized.columns if col.startswith('x')]].values.ravel()
+    x_columns = [col for col in model_normalized.columns if col.startswith('x')]
+    x_sim_norm = _domain_matrix(model_normalized[x_columns].values)
     y_sim_norm = model_normalized[[col for col in model_normalized.columns if col.startswith('zeta')]].values.ravel()
 
     # ---- physical ----
-    x_sim_phys = model_data[[col for col in model_data.columns if col.startswith('x')]].values.ravel()
+    x_sim_phys = _domain_matrix(model_data[[col for col in model_data.columns if col.startswith('x')]].values)
     y_sim_phys = model_data[[col for col in model_data.columns if col.startswith('zeta')]].values.ravel()
 
     y_prior_std = np.sqrt(y_prior_var)
@@ -184,44 +201,27 @@ def plot_emulator_prior(y_prior_mean, y_prior_var, model_data, model_normalized,
     y_prior_std_phys = y_prior_std * y_sd
 
     # Sort indices
-    idx_norm = np.argsort(x_sim_norm)
-    idx_phys = np.argsort(x_sim_phys)
-
-    fig, axes = plt.subplots(2, 1, figsize=(9, 9))
-
-    # Top: normalized
-    axes[0].scatter(x_sim_norm, y_sim_norm, color="blue", alpha=0.6, label="Simulator Data")
-    axes[0].plot(x_sim_norm[idx_norm], y_prior_mean[idx_norm], color="orange", label="Emulator Prior Mean")
-    axes[0].fill_between(
-        x_sim_norm[idx_norm],
-        (y_prior_mean - 2 * y_prior_std)[idx_norm],
-        (y_prior_mean + 2 * y_prior_std)[idx_norm],
-        color="orange",
-        alpha=0.2,
-        label="Prior ±2σ",
-    )
-    axes[0].set_title("Normalized Space")
-    axes[0].set_xlabel("x (normalized)")
-    axes[0].set_ylabel("y (normalized)")
-    axes[0].grid(True)
-    axes[0].legend()
-
-    # Bottom: physical
-    axes[1].scatter(x_sim_phys, y_sim_phys, color="blue", alpha=0.6, label="Simulator Data")
-    axes[1].plot(x_sim_phys[idx_phys], y_prior_mean_phys[idx_phys], color="green", label="Emulator Prior Mean")
-    axes[1].fill_between(
-        x_sim_phys[idx_phys],
-        (y_prior_mean_phys - 2 * y_prior_std_phys)[idx_phys],
-        (y_prior_mean_phys + 2 * y_prior_std_phys)[idx_phys],
-        color="green",
-        alpha=0.2,
-        label="Prior ±2σ",
-    )
-    axes[1].set_title("Physical Space")
-    axes[1].set_xlabel("x_x_sim")
-    axes[1].set_ylabel("y_y_sim")
-    axes[1].grid(True)
-    axes[1].legend()
+    n_domain = x_sim_norm.shape[1]
+    fig, axes = plt.subplots(2, n_domain, figsize=(6 * n_domain, 8), squeeze=False)
+    for j in range(n_domain):
+        idx_norm = np.argsort(x_sim_norm[:, j])
+        idx_phys = np.argsort(x_sim_phys[:, j])
+        for row, x_values, y_values, prior, std, title, color, idx in [
+            (0, x_sim_norm[:, j], y_sim_norm, y_prior_mean, y_prior_std, "Normalized Space", "orange", idx_norm),
+            (1, x_sim_phys[:, j], y_sim_phys, y_prior_mean_phys, y_prior_std_phys, "Physical Space", "green", idx_phys),
+        ]:
+            ax = axes[row, j]
+            ax.scatter(x_values, y_values, color="blue", alpha=0.6, label="Simulator Data")
+            ax.plot(x_values[idx], prior[idx], color=color, label="Emulator Prior Mean")
+            ax.fill_between(
+                x_values[idx], (prior - 2 * std)[idx], (prior + 2 * std)[idx],
+                color=color, alpha=0.2, label="Prior ±2σ",
+            )
+            ax.set_title(f"{title}: {x_columns[j]}")
+            ax.set_xlabel(f"{x_columns[j]} ({'normalized' if row == 0 else 'physical'})")
+            ax.set_ylabel("y")
+            ax.grid(True)
+            ax.legend()
 
     plt.tight_layout()
     plt_path = os.path.join(figures_directory, f"emulator_prior.png")
@@ -266,6 +266,26 @@ def plot_discrepancy_diagnostics(
     figure_name="discrepancy_diagnostics.png",
     suptitle="Discrepancy Diagnostics",
 ):
+    x_input = _domain_matrix(x_obs)
+    if x_input.shape[1] > 1:
+        x_sim_matrix = _domain_matrix(x_sim)
+        for j in range(x_input.shape[1]):
+            holdout_j = holdout_data
+            if holdout_data is not None and "x" in holdout_data:
+                holdout_j = dict(holdout_data)
+                holdout_j["x"] = _domain_matrix(holdout_data["x"])[:, j]
+            plot_discrepancy_diagnostics(
+                x_input[:, j], y_obs, x_sim_matrix[:, j], y_sim,
+                y_prior_mean, y_prior_var, delta_eta_mean, delta_eta_std,
+                y_post_mean, y_post_var, theta_fixed, theta_fixed_phys,
+                gp_eta, kappa_mean, kappa_std, idx, dtheta,
+                calibration_settings, cross_validation_settings,
+                holdout_data=holdout_j, figure_path=figure_path,
+                figure_name=f"{os.path.splitext(figure_name)[0]}_x{j}.png",
+                suptitle=f"{suptitle} (domain coordinate x_{j})",
+            )
+        return
+
     x = np.asarray(x_obs).ravel()
     y_obs = np.asarray(y_obs).ravel()
     y_prior_mean = np.asarray(y_prior_mean).ravel()
@@ -595,6 +615,17 @@ def plot_pca_diagnostics(
     import numpy as np
     import matplotlib.pyplot as plt
 
+    x_matrix = _domain_matrix(x_obs)
+    if x_matrix.shape[1] > 1:
+        for j in range(x_matrix.shape[1]):
+            plot_pca_diagnostics(
+                S, W, x_matrix[:, j], kappa_theta_chain, theta_labels,
+                max_modes=max_modes,
+                figure_name=f"{os.path.splitext(figure_name)[0]}_x{j}.png",
+                figure_directory=figure_directory,
+            )
+        return
+
     dtheta = W.shape[0]
     Nmcmc = kappa_theta_chain.shape[0]
 
@@ -721,7 +752,22 @@ def discrepancy_variance_decomposition(
         Var(Y) = E[Var(Y|θ,δ)] + Var(E[Y|θ,δ])
     """
 
-    No = len(x_obs)
+    x_matrix = _domain_matrix(x_obs)
+    if x_matrix.shape[1] > 1:
+        x_input_matrix = _domain_matrix(x_obs_input)
+        outputs = []
+        for j in range(x_matrix.shape[1]):
+            outputs.append(discrepancy_variance_decomposition(
+                x_matrix[:, j], y_obs, theta_fixed, kappa_theta_chain,
+                delta_eta_chain, kappa_mean, delta_eta_mean, gp_eta,
+                x_input_matrix[:, j], Nsamp=Nsamp, plot=plot,
+                figure_path=figure_path,
+                save_name=f"{os.path.splitext(save_name)[0]}_x{j}.png",
+                suptitle=f"{suptitle} (domain coordinate x_{j})",
+            ))
+        return outputs
+
+    No = len(x_matrix)
     Nmcmc = kappa_theta_chain.shape[0]
     dtheta = kappa_theta_chain.shape[1]
 
@@ -886,6 +932,16 @@ def plot_relative_contributions(
     save_name="relative_contributions.png",
     suptitle="Relative Discrepancy Contributions"
 ):
+    x_matrix = _domain_matrix(x)
+    if x_matrix.shape[1] > 1:
+        for j in range(x_matrix.shape[1]):
+            plot_relative_contributions(
+                x_matrix[:, j], contrib, figure_path=figure_path,
+                save_name=f"{os.path.splitext(save_name)[0]}_x{j}.png",
+                suptitle=f"{suptitle} (domain coordinate x_{j})",
+            )
+        return
+    x = x_matrix[:, 0]
 
     # ------------------------------------------------------------
     # Magnitudes
@@ -1405,4 +1461,3 @@ def eta_predict(x, theta_star, gp_eta):
 #         np.savetxt(os.path.join(output_directory, "discrepancy_diagnostics_realspace.txt"), output_data, header=header, delimiter="\t")
 
 #         return()
-
