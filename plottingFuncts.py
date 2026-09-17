@@ -322,7 +322,7 @@ def plot_discrepancy_diagnostics(
     # Top Left: Emulator Prior
     ax1 = fig.add_subplot(gs[0, 0])
     ax1.scatter(x, y_obs, label="Observed", color="black")
-    ax1.plot(x, y_prior_mean, label="η(x, θ)", linestyle="--")
+    ax1.plot(x, y_prior_mean, label=r"$\mathcal{E}(x,\eta(x))$", linestyle="--")
     ax1.scatter(np.asarray(x_sim).ravel(), np.asarray(y_sim).ravel(),
                 label="Simulator Data", color="blue", alpha=0.5)
     # ax1.fill_between(
@@ -359,7 +359,7 @@ def plot_discrepancy_diagnostics(
         elif known_delta_form == "trig_funct" and form_config:
             trig_function = form_config.get("function")
             if trig_function == "sin":
-                delta_known = np.sin(x)
+                delta_known = -np.sin(x)
             elif trig_function == "cos":
                 delta_known = np.cos(x)
             else:
@@ -428,20 +428,23 @@ def plot_discrepancy_diagnostics(
                 theta_base,
                 "k--",
                 linewidth=2,
-                label=rf"$\theta_{{{k}}}^{{base}}(x)$"
+                label=rf"$\eta_{{{k}}}^{{base}}(x)$"
             )
 
             ax_k.plot(
                 x,
                 y_mean,
                 linewidth=2,
-                label=rf"$\theta_{{{k}}}(x)+\kappa_{{{k}}}(x)$"
+                label=rf"$\eta_{{{k}}}(x)+\kappa_{{{k}}}(x)$"
             )
 
             ax_k.fill_between(x, y_lower, y_upper, alpha=0.3)
 
-            ax_k.set_title(rf"Calibrated parameter: $\theta_{{{k}}}(x)$")
-            ax_k.set_ylabel(rf"$\theta_{{{k}}}(x)$")
+
+
+
+            ax_k.set_title(rf"Calibrated model: $\eta_{{{k}}}(x)$")
+            ax_k.set_ylabel(rf"$\eta_{{{k}}}(x)$")
 
         # -------------------------------------------------------------
         # Cross-validation truth
@@ -505,14 +508,14 @@ def plot_discrepancy_diagnostics(
                             theta_known,
                             color="red",
                             linestyle="--",
-                            label=rf"$\theta_{{{k}}}^{{true}}$"
+                            label=rf"$\kappa_{{{k}}}^{{true}}$"
                         )
                     else:
                         ax_k.plot(
                             x,
                             theta_known,
                             "r--",
-                            label=rf"$\theta_{{{k}}}^{{true}}(x)$"
+                            label=rf"$\kappa_{{{k}}}^{{true}}(x)$"
                         )
 
         ax_k.set_xlabel("x")

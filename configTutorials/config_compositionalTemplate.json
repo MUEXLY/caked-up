@@ -10,7 +10,7 @@
         "posterior_predictive_samples": 200,
 
         "theta_settings": {
-            "theta_initialization":"fixed",
+            "theta_initialization":"compositional",
 
             "fixed_settings": {
                 "use_mean": true,
@@ -138,9 +138,9 @@
     },
     "input_settings":{
 
-        "model_data_path": "/home/liammyhill/gitLocal/dislocOKMC_enrique/analyticalModelPredictions/",
+        "model_data_path": "/home/liammyhill/gitLocal/lmyhill/embeddedModel_toyProb/modelData/",
 
-        "obs_data_path": "/home/liammyhill/gitLocal/dislocOKMC_enrique/observationData_okmc/",
+        "obs_data_path": "/home/liammyhill/gitLocal/lmyhill/embeddedModel_toyProb/observationData/",
 
         "input_delimiter": ",",
 
@@ -148,7 +148,7 @@
     },
     "cross_validation_settings":{
 
-        "conduct_cross_validation": false,
+        "conduct_cross_validation": true,
 
         "known_theta_form": "trig_funct",
 
