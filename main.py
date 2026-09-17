@@ -5,13 +5,19 @@ import matplotlib.pyplot as plt
 from scipy.linalg import cholesky, cho_solve
 from scipy.stats import multivariate_normal, norm
 from scipy.stats import invgamma
+from scipy.interpolate import interp1d
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C
 from functs import *
+from shrinkage import *
 from plottingFuncts import *
 import json
 
 def main():
+
+    # ============================================================
+    # 1a. Load config settings
+    # ============================================================
 
     if len(sys.argv) < 2:
         raise ValueError("Usage: python main.py <config_path>")
@@ -24,6 +30,10 @@ def main():
     # store calibration settings
     calibration_settings = config["calibration_settings"]
 
+    # load settings for shrinkage models
+    shrinkage_settings = calibration_settings["shrinkage_models"]
+
+    # load settings for orthogonalization of delta_eta with respect to sensitivities G
     orthogonalization_settings = calibration_settings["orthogonalization_settings"]
 
     # store input settings
@@ -65,6 +75,10 @@ def main():
         figure_path = os.path.join(results_path, "figures")
 
     os.makedirs(figure_path, exist_ok=True)
+
+    # ============================================================
+    # 1b. Load the model and observation data, normalize, and prepare for calibration
+    # ============================================================
     # Load data
     # Create a DataFrame to store model data
     # The DataFrame can have any number of rows and any number of columns
@@ -140,6 +154,8 @@ def main():
             n_cv_theta = len(cross_validation_settings["known_theta_form_params"]["constant"]["values"])
         elif known_theta_form == "trig_funct":
             n_cv_theta = len(cross_validation_settings["known_theta_form_params"]["trig_funct"]["functions"])
+        elif known_theta_form == "linear":
+            n_cv_theta = len(cross_validation_settings["known_theta_form_params"]["linear"]["m"])
         else:
             raise ValueError(f"Unknown known_theta_form: {known_theta_form}")
         if n_theta != n_cv_theta:
@@ -210,6 +226,37 @@ def main():
     print("\nNormalized Observation Data:")
     print(observation_normalized.head())
 
+    if cross_validation_settings.get("holdout_data", False):
+
+        holdout_paths = cross_validation_settings["holdout_data_paths"]
+
+        appDomain_holdout = np.loadtxt(
+            holdout_paths["appDomain_holdout"]
+        )
+
+        observation_holdout = np.loadtxt(
+            holdout_paths["observationData_holdout"]
+        )
+
+        x_holdout_realspace = np.asarray(appDomain_holdout).reshape(-1)
+
+        y_holdout_realspace = np.asarray(observation_holdout).reshape(-1)
+
+        x_holdout_norm= (x_holdout_realspace - min_x) / (max_x - min_x)
+
+        y_holdout_norm = (y_holdout_realspace - y_mean) / y_std
+
+
+        holdout_data_realspace = pd.DataFrame({
+            'x': x_holdout_realspace,
+            'y': y_holdout_realspace
+        })
+
+        holdout_data_normalized = pd.DataFrame({
+            'x': (x_holdout_realspace - min_x) / (max_x - min_x),
+            'y': (y_holdout_realspace - y_mean) / y_std
+        })
+
 
     # create a reverse-normalization dictionary to store all the necessary information to transform the normalized discrepancy back to physical units for interpretation and visualization
     reverse_normalization = {
@@ -269,6 +316,21 @@ def main():
     No = len(x_obs)
 
     # ============================================================
+    # 1c. Instantiate shrinkage prior objects based on config
+    # ============================================================
+
+    kappa_priors = [
+    create_prior( shrinkage_settings["kappa"])
+    for _ in range(dtheta)] # one prior object per theta dimension
+
+    print(f"Instantiated kappa_priors of type {kappa_priors[0].name} with initial state: {kappa_priors[0].get_state()}")
+    
+    delta_eta_prior=create_prior(shrinkage_settings["delta_eta"])
+    print(f"Instantiated delta_eta_prior of type {delta_eta_prior.name} with initial state: {delta_eta_prior.get_state()}")
+
+
+
+    # ============================================================
     # 2. Train probabilistic emulator GP η(x,θ)
     # ============================================================
 
@@ -309,28 +371,91 @@ def main():
     # ============================================================
     theta_fixed_arr =[]
     theta_fixed_phys_arr = []
+    theta_settings = calibration_settings['theta_settings']
+    theta_init=theta_settings['theta_initialization']
 
-    if calibration_settings['theta_initialization'] == 'fixed':
-        theta_fixed = theta_sim.mean(axis=0)
+    if theta_init == "fixed":
+
+        fixed_settings = theta_settings["fixed_settings"]
+
+        if fixed_settings.get("use_mean", True):
+            theta_fixed = theta_sim.mean(axis=0)
+
+        else:
+            fixed_values = np.asarray(fixed_settings["fixed_values"])
+
+            # convert physical -> normalized
+            theta_fixed = np.zeros(len(theta_labels))
+
+            for i, label in enumerate(theta_labels):
+                min_val = model_data[f"theta_{label}"].min()
+                max_val = model_data[f"theta_{label}"].max()
+
+                theta_fixed[i] = (
+                    (fixed_values[i] - min_val)
+                    / (max_val - min_val)
+                )
+
         theta_fixed_arr.append(theta_fixed)
 
         print("\nFixed theta used (normalized):")
         print(theta_fixed)
+
         print("\nFixed theta used (physical units):")
+
         for i, label in enumerate(theta_labels):
-            # print(f"{label} (normalized) = {theta_fixed[i]:.3f}")
-            min_val = model_data[f'theta_{label}'].min()
-            max_val = model_data[f'theta_{label}'].max()
-            theta_fixed_phys = theta_fixed[i] * (max_val - min_val) + min_val
-            print(f"{label}: {theta_fixed_phys}")
-            theta_fixed_phys_arr.append(theta_fixed_phys)
+
+            min_val = model_data[f"theta_{label}"].min()
+            max_val = model_data[f"theta_{label}"].max()
+
+            theta_phys = theta_fixed[i] * (max_val - min_val) + min_val
+
+            theta_fixed_phys_arr.append(theta_phys)
+
+            print(f"{label}: {theta_phys}")
+
+    elif theta_init == "compositional":
+
+        No = len(x_obs)
+
+        theta_fixed = np.zeros((No, dtheta))
+
+        print("\nCompositional theta initialized.")
+
+        for k, label in enumerate(theta_labels):
+
+            # interpolate constitutive theta field from simulation points
+            interp_theta = interp1d(
+                x_sim.flatten(),
+                theta_sim[:, k],
+                kind="linear",
+                fill_value="extrapolate"
+            )
+
+            theta_fixed[:, k] = interp_theta(
+                x_obs.flatten()
+            )
+
+            min_val = model_data[f"theta_{label}"].min()
+            max_val = model_data[f"theta_{label}"].max()
+
+            theta_phys = (
+                theta_fixed[:, k] * (max_val - min_val)
+                + min_val
+            )
+
+            theta_fixed_phys_arr.append(theta_phys)
+
+            print(f"{label}: compositional field loaded")
+
     else:
-        raise NotImplementedError("Only fixed theta initialization is currently implemented.")
-    
+        raise NotImplementedError(
+            "Only fixed/compositional theta initialization is currently implemented."
+        )
     # PCA implementation
     
     # compute jacobian across all x
-    J_all = np.array([compute_jacobian(x_obs[i], theta_fixed, gp_eta)
+    J_all = np.array([compute_jacobian(x_obs[i], get_theta_at_obs(theta_fixed, i), gp_eta)
                   for i in range(No)])   # shape (No, dtheta)
     
     U, S, Vt = np.linalg.svd(J_all, full_matrices=False)
@@ -346,10 +471,11 @@ def main():
     # kappa_theta = np.zeros((dtheta, No))
     kappa_theta=W @ kappa_z  # shape (dtheta, No)``
 
+
     # Initial hyperparameters for each \kappa (i.e. each theta dimension)
-    ell_kappa = calibration_settings['kappa_prior_vals']['ell'] * np.ones(dtheta)
-    # var_delta = 0.05 * np.ones(dtheta)
-    var_kappa = calibration_settings['kappa_prior_vals']['var'] * np.ones(dtheta) # start with smaller variance to encourage more conservative initial discrepancy fields, which can help stabilize early sampling
+    # ell_kappa = calibration_settings['kappa_prior_vals']['ell'] * np.ones(dtheta)
+    # # var_delta = 0.05 * np.ones(dtheta)
+    # var_kappa = calibration_settings['kappa_prior_vals']['var'] * np.ones(dtheta) # start with smaller variance to encourage more conservative initial discrepancy fields, which can help stabilize early sampling
 
     # Initial noise variance
     sigma2 = calibration_settings['sigma2_prior_val']**2
@@ -362,8 +488,8 @@ def main():
     delta_eta = np.zeros(No)
 
     # hyperparameters for δ_eta GP
-    ell_eta = calibration_settings['delta_eta_prior_vals']['ell']
-    var_eta = calibration_settings['delta_eta_prior_vals']['var']
+    # ell_eta = calibration_settings['delta_eta_prior_vals']['ell']
+    # var_eta = calibration_settings['delta_eta_prior_vals']['var']
 
     # ============================================================
     # 5. Sampler config
@@ -372,8 +498,8 @@ def main():
     mh_scale = calibration_settings['mh_scale_kappa_prior']
     mh_scale_kappa=np.ones(dtheta) * mh_scale
 
-    kappa_prior_ell=calibration_settings['kappa_priors']['ell']
-    kappa_prior_var=calibration_settings['kappa_priors']['var']
+    # kappa_prior_ell=calibration_settings['kappa_priors']['ell']
+    # kappa_prior_var=calibration_settings['kappa_priors']['var']
 
     mh_scales=calibration_settings['mh_scales']
 
@@ -408,15 +534,13 @@ def main():
 
     for it in range(Nmcmc):
 
-        # ---- update δₖ fields ----
+        # ---- update kappa fields ----
         for k in range(dtheta):
-            kappa_z, acc = mh_update_delta_k(
+            kappa_z, acc = kappa_priors[k].sample_kappa_field(
                 k,
                 kappa_z,
                 delta_eta,
                 theta_fixed,
-                ell_kappa[k],
-                var_kappa[k],
                 x_obs,
                 y_obs,
                 gp_eta,
@@ -449,32 +573,52 @@ def main():
 
 
         # ---- update \kappa hyperparameters ----
+        # for k in range(dtheta):
+        #     ell_kappa[k], var_kappa[k], _ = mh_update_delta_hyperparams(
+        #         kappa_z[k],
+        #         ell_kappa[k],
+        #         var_kappa[k],
+        #         x_obs,
+        #         kappa_prior_ell,
+        #         kappa_prior_var,
+        #         mh_scales,
+        #         calibration_settings['allow_singular_cov']
+        #     )
+
         for k in range(dtheta):
-            ell_kappa[k], var_kappa[k], _ = mh_update_delta_hyperparams(
-                kappa_z[k],
-                ell_kappa[k],
-                var_kappa[k],
-                x_obs,
-                kappa_prior_ell,
-                kappa_prior_var,
-                mh_scales,
-                calibration_settings['allow_singular_cov']
+            kappa_priors[k].update_hyperparameters(
+                k=k,
+                z=kappa_z[k],
+                x_obs=x_obs,
+                mh_scales=mh_scales,
+                allow_singular_cov=calibration_settings['allow_singular_cov']
             )
 
         # ---- compute sensitivities ---- (@ theta fixed)
         G=compute_sensitivities(x_obs, theta_fixed, gp_eta, orthogonalization_settings['theta_epsilon'])
 
         # ---- update δ_eta_raw (Gibbs) ----
-        delta_eta_raw = gibbs_delta_eta(
+        # delta_eta_raw = gibbs_delta_eta(
+        #     x_obs,
+        #     y_obs,
+        #     theta_fixed,
+        #     kappa_theta,
+        #     gp_eta,
+        #     sigma2,
+        #     delta_eta_prior.ell,
+        #     delta_eta_prior.var
+        # )
+
+        delta_eta_raw = delta_eta_prior.sample_delta_eta_field(
+            delta_eta,
             x_obs,
             y_obs,
             theta_fixed,
             kappa_theta,
             gp_eta,
-            sigma2,
-            ell_eta,
-            var_eta
+            sigma2
         )
+
 
         # orthogonalize delta_eta with respect to the sensitivities G
 
@@ -482,6 +626,14 @@ def main():
             delta_eta=orthogonalize_delta_eta(delta_eta_raw, G)
         else:
             delta_eta = delta_eta_raw
+
+        delta_eta_prior.update_hyperparameters(
+            k=None,
+            z=delta_eta,
+            x_obs=x_obs,
+            mh_scales=mh_scales,
+            allow_singular_cov=calibration_settings['allow_singular_cov']
+        )
 
         # ---- Gibbs update σ² ----
         sigma2 = gibbs_sigma2(
@@ -493,14 +645,23 @@ def main():
         gp_eta,
         a_sigma,
         b_sigma
-    )
+        )
         
         # CRITICAL: map back AFTER updating all components
         kappa_theta = W @ kappa_z
 
+        # ---- diagnostic ----
+        # print("theta_fixed.shape:", np.shape(theta_fixed))
+        # print("kappa_theta.shape:", np.shape(kappa_theta))
+        # print("x_obs.shape:", np.shape(x_obs))
+        # print("theta_sim.shape:", np.shape(theta_sim))
+
         # ---- store ----
         kappa_theta_chain[it] = kappa_theta
-        theta_star_chain[it] = theta_fixed[:, None] + kappa_theta
+        if theta_fixed.ndim == 1:
+            theta_star_chain[it] = theta_fixed[:, None] + kappa_theta
+        else:
+            theta_star_chain[it] = theta_fixed.T + kappa_theta
         delta_eta_chain[it] = delta_eta
         sigma2_chain[it] = sigma2
 
@@ -510,12 +671,22 @@ def main():
             print(" sigma2 =", sigma2)
             print(" kappa acceptance rates:",
                 accept_kappa / (it+1))
-            print(" ell_kappa:", ell_kappa)
-            print(" var_kappa:", var_kappa)
+            # for k in range(dtheta):
+            #     print(
+            #         f"kappa prior {k}:",
+            #         kappa_priors[k].get_state()
+            #     )
+            # print(
+            #     "delta_eta prior:",
+            #     delta_eta_prior.get_state()
+            # )
             if orthogonalization_settings['orthogonalize_delta_eta']:
                 proj = G @ np.linalg.solve(G.T @ G, G.T @ delta_eta)
                 print("Projection norm (should be near 0):", np.linalg.norm(proj))
                 
+            # print("||kappa_z||      =", np.linalg.norm(kappa_z))
+            # print("||W @ kappa_z||  =", np.linalg.norm(W @ kappa_z))
+            # print("||kappa_theta||  =", np.linalg.norm(kappa_theta))
 
             print("--------------------------------------------------")
 
@@ -564,7 +735,7 @@ def main():
         for s in idx:
 
             kappa_theta_s = kappa_theta_chain[s, :, i]
-            theta_star = theta_fixed + kappa_theta_s
+            theta_star = get_theta_at_obs(theta_fixed, i) + kappa_theta_s
             delta_eta_s = delta_eta_chain[s, i]
 
 
@@ -684,6 +855,86 @@ def main():
         np.savez(os.path.join(results_path, "results_physical.npz"), **results_physical)
         print(f"Saved physical results to {os.path.join(results_path, 'results_physical.npz')}")
 
+    # if evaluating against holdout data, interpolate the kappa and delta fields to the holdout x values and save the results to a separate file
+    if cross_validation_settings.get("holdout_data", False):
+
+        #initialize the holdout posterior predictive mean array
+        y_holdout_post_mean = np.zeros(len(x_holdout_norm))
+        y_holdout_post_var = np.zeros(len(x_holdout_norm))
+
+        # initialize the holdout posterior predictive std array
+        y_holdout_post_std = np.zeros(len(x_holdout_norm))
+
+        # initialize the holdout kappa and delta arrays
+        kappa_holdout = np.zeros((dtheta, len(x_holdout_norm)))
+        delta_holdout = np.zeros(len(x_holdout_norm))
+
+        # interpolate the kappa and delta fields to the holdout x values
+        for k in range(dtheta):
+
+            interp = interp1d(
+                results_normalized["x_obs"],
+                kappa_mean[k],
+                kind="cubic",
+                fill_value="extrapolate"
+            )
+
+            kappa_holdout[k] = interp(x_holdout_norm)
+
+        delta_interp = interp1d(
+            results_normalized["x_obs"],
+            delta_eta_mean,
+            kind="cubic",
+            fill_value="extrapolate"
+        )
+
+        delta_holdout = delta_interp(x_holdout_norm)
+
+        # compute the posterior predictive mean for the holdout points
+        for i in range(len(x_holdout_norm)):
+
+            theta_star = get_theta_at_obs(theta_fixed, i) + kappa_holdout[:, i]
+
+            m_i, s2_i = eta_predict(
+                x_holdout_norm[i],
+                theta_star,
+                gp_eta
+            )
+
+            y_holdout_post_mean[i] = (
+                m_i
+                + delta_holdout[i]
+            )
+
+            # compute the posterior predictive variance for the holdout points
+            y_holdout_post_var[i] = (
+                s2_i
+                + delta_eta_prior.var
+                + sigma2
+            )
+
+        # differentiate normalized vs physical holdout posterior predictive mean and std
+        # generate the dictionaries of holdout results for normalized and physical space
+        holdout_results_normalized = {
+            "x": x_holdout_norm,
+            "y": y_holdout_norm,
+            "y_holdout_post_mean": y_holdout_post_mean,
+            "y_holdout_post_var": y_holdout_post_var,
+            "y_holdout_post_std": y_holdout_post_std,
+            "kappa_holdout": kappa_holdout,
+            "delta_holdout": delta_holdout
+        }
+
+        holdout_results_physical = {
+            "x": x_holdout_realspace,
+            "y": y_holdout_realspace,
+            "y_holdout_post_mean": y_holdout_post_mean * y_sd + y_mu,
+            "y_holdout_post_var": y_holdout_post_var * y_sd**2,
+            "y_holdout_post_std": y_holdout_post_std * y_sd,
+            "kappa_holdout": kappa_holdout * (theta_max - theta_min),  # scale to physical units
+            "delta_holdout": delta_holdout * y_sd  # scale to physical units
+        }
+
 
 
     # ============================================================
@@ -713,6 +964,11 @@ def main():
             if known_theta_form == "constant":
                 known_theta_values = known_theta_params["values"]
                 print(f"Known theta values: {known_theta_values}")
+            if known_theta_form == "linear":
+                known_theta_slopes = known_theta_params["m"]
+                print(f"Known theta slopes: {known_theta_slopes}")
+                known_theta_intercepts = known_theta_params["b"]
+                print(f"Known theta intercepts: {known_theta_intercepts}")
             if known_theta_form == "trig_funct":
                 known_theta_functions = known_theta_params["functions"]
                 print(f"Known theta functions: {known_theta_functions}")
@@ -736,9 +992,27 @@ def main():
         x_min = reverse_normalization["x"][x_col]["min"]
         x_max = reverse_normalization["x"][x_col]["max"]
         x_obs_norm = (x_obs_phys - x_min) / (x_max - x_min)
-        Z_obs=np.hstack([x_obs_norm.reshape(-1,1), 
-                         np.tile(theta_fixed_arr, 
-                                 (x_obs_norm.shape[0], 1))])
+        # Z_obs=np.hstack([x_obs_norm.reshape(-1,1), 
+                        #  np.tile(theta_fixed_arr, 
+                        #          (x_obs_norm.shape[0], 1))])
+        theta_settings = calibration_settings.get("theta_settings", {})
+        theta_init = theta_settings.get("theta_initialization", "fixed")
+
+        if theta_init == "fixed":
+
+            theta_block = np.tile(theta_fixed_arr, (len(x_obs_norm), 1))
+
+        elif theta_init == "compositional":
+
+            theta_block = theta_fixed
+
+        else:
+            raise ValueError(f"Unknown theta initialization: {theta_init}")
+
+        Z_obs = np.hstack([
+            x_obs_norm.reshape(-1,1),
+            theta_block
+        ])
         y_prior_mean_norm = gp_eta.predict(Z_obs)
         y_prior_mean_phys = y_prior_mean_norm * y_sd + y_mu
         y_prior_var_norm = np.diag(gp_eta.predict(Z_obs, return_cov=True)[1])
@@ -755,22 +1029,31 @@ def main():
             results_physical['delta_eta_std'].values,
             results_physical['y_post_mean'].values,
             results_physical['y_post_std'].values ** 2,
-            theta_fixed_arr,
+            theta_fixed,
             theta_fixed_phys_arr,
             gp_eta,
             results_physical[[f"kappa_{k}_mean" for k in range(dtheta)]].values.T,
             results_physical[[f"kappa_{k}_std"  for k in range(dtheta)]].values.T,
             idx,
             dtheta,
+            calibration_settings,
             cross_validation_settings,
-            figure_path,
+            holdout_data=holdout_results_physical if cross_validation_settings.get("holdout_data", False) else None,
             figure_name="posterior_predictive_check_physical.png",
+            figure_path=figure_path,
             suptitle='Posterior Predictive Check (Physical Units)'
         )
 
 
     if figure_options['posterior_predict_normalized']:
         print(f'Generating posterior predictive check figure (normalized)...')
+
+        #diagnostic print
+        print("theta_fixed_arr:", theta_fixed_arr)
+        print("np.shape(theta_fixed_arr):", np.shape(theta_fixed_arr))
+        print("theta_fixed.shape:", np.shape(theta_fixed))
+
+
         plot_discrepancy_diagnostics(
             results_normalized['x_obs'].values,
             results_normalized['zeta_obs'].values,
@@ -782,15 +1065,17 @@ def main():
             results_normalized['delta_eta_std'].values,
             results_normalized['y_post_mean'].values,
             results_normalized['y_post_std'].values ** 2,
-            theta_fixed_arr,
+            theta_fixed,
             theta_fixed_phys_arr,
             gp_eta,
             kappa_mean,
             kappa_std,
             idx,
             dtheta,
+            calibration_settings,
             {**cross_validation_settings, "conduct_cross_validation": False},
-            figure_path,
+            holdout_data=holdout_results_normalized if cross_validation_settings.get("holdout_data", False) else None,
+            figure_path=figure_path,
             figure_name="posterior_predictive_check_normalized.png",
             suptitle='Posterior Predictive Check (Normalized Space)'
         )
@@ -809,7 +1094,7 @@ def main():
             delta_eta_mean=delta_eta_mean,
             gp_eta=gp_eta,
             x_obs_input=x_obs,
-            Nsamp=200,
+            Nsamp=calibration_settings['posterior_predictive_samples'],
             plot=True,
             figure_path=figure_path,
             save_name="variance_decomposition.png",
@@ -826,7 +1111,7 @@ def main():
             kappa_theta_chain=kappa_theta_chain,
             delta_eta_chain=delta_eta_chain,
             gp_eta=gp_eta,
-            Nsamp=200
+            Nsamp=calibration_settings['posterior_predictive_samples']
         )
 
         plot_relative_contributions(
@@ -836,12 +1121,6 @@ def main():
             save_name="relative_contributions.png",
             suptitle="Relative Contributions of κ and δη"
         )
-
-        
-
-
-        
-    
 
     with open(f"{results_path}/used_config.json", "w") as f:
         json.dump(config, f, indent=2)
@@ -903,7 +1182,7 @@ def main():
         y_nrmse = y_rmse / (y_range + 1e-12)
 
         print(f"y MSE:   {y_mse:.6f}")
-        print(f"y NRMSE:{y_nrmse:.6f}")
+        print(f"y NRMSE:    {y_nrmse:.6f}")
 
         # ========================================================
         # 2. Theta field metrics
@@ -943,6 +1222,15 @@ def main():
                     raise ValueError(
                         f"Unknown trig function: {func}"
                     )
+                
+            elif known_theta_form == "linear":
+
+                m = known_theta_params["m"][k]
+                b = known_theta_params["b"][k]
+
+                x_vals = x_obs_phys.flatten()
+
+                theta_true_k = m * x_vals + b
 
             else:
                 raise ValueError(
@@ -954,10 +1242,25 @@ def main():
             # Predicted theta field
             # ----------------------------------------------------
 
-            theta_pred_k = (
-                theta_fixed[k]
-                + kappa_mean[k, :]
-            )
+            theta_settings = calibration_settings.get("theta_settings", {})
+            theta_init = theta_settings.get("theta_initialization", "fixed")
+
+            if theta_init == "fixed":
+
+                theta_pred_k = (
+                    theta_fixed[k]
+                    + kappa_mean[k, :]
+                )
+
+            elif theta_init == "compositional":
+
+                theta_pred_k = (
+                    theta_fixed[:, k]
+                    + kappa_mean[k, :]
+                )
+
+            else:
+                raise ValueError(f"Unknown theta initialization: {theta_init}")
 
             # ----------------------------------------------------
             # MSE
@@ -1048,11 +1351,26 @@ def main():
                     elif func == "cos":
                         delta_true += np.cos(x_val)
 
+            elif known_delta_form == "linear":
+
+                m = known_delta_params["m"]
+
+                b = known_delta_params["b"]
+
+                delta_true = m * x_val + b
+
+            elif known_delta_form == "polynomial":
+
+                coeffs = known_delta_params["coeffs"]
+
+                delta_true = np.polyval(coeffs, x_val)
+
             else:
                 raise ValueError(
                     f"Unknown known_delta_form: "
                     f"{known_delta_form}"
                 )
+            
 
             # ----------------------------------------------------
             # Convert delta prediction to physical units
@@ -1117,6 +1435,42 @@ def main():
         if delta_nrmse is not None:
             net_nrmse += delta_nrmse
 
+
+        # ========================================================
+        # Holdout metrics
+        # ========================================================
+
+        if cross_validation_settings.get("holdout_data", False):
+
+            y_holdout_true = holdout_results_physical['y'].flatten()
+
+            y_holdout_pred = (
+                holdout_results_physical['y_holdout_post_mean'].flatten()
+            )
+
+            y_holdout_mse = np.mean(
+                (y_holdout_true - y_holdout_pred) ** 2
+            )
+
+            y_holdout_rmse = np.sqrt(y_holdout_mse)
+
+            y_holdout_range = (
+                np.max(y_holdout_true)
+                - np.min(y_holdout_true)
+            )
+
+            if y_holdout_range < 1e-12:
+                y_holdout_range = 1.0
+
+            y_holdout_nrmse = (
+                y_holdout_rmse / y_holdout_range
+            )
+
+            print(
+                f"Holdout y: "
+                f"MSE={y_holdout_mse:.6f}, "
+                f"NRMSE={y_holdout_nrmse:.6f}"
+            )
         # ========================================================
         # Save JSON
         # ========================================================
@@ -1150,7 +1504,24 @@ def main():
             ),
 
             "net_loss": float(net_loss),
-            "net_nrmse": float(net_nrmse)
+            "net_nrmse": float(net_nrmse),
+
+
+            "holdout_y_mse": (
+                float(y_holdout_mse)
+                if cross_validation_settings.get(
+                    "holdout_data", False
+                )
+                else None
+            ),
+
+            "holdout_y_nrmse": (
+                float(y_holdout_nrmse)
+                if cross_validation_settings.get(
+                    "holdout_data", False
+                )
+                else None
+            )
         }
 
         with open(
