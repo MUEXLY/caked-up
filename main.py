@@ -1,11 +1,11 @@
 import sys
+import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.linalg import cholesky, cho_solve
 from scipy.stats import multivariate_normal, norm
 from scipy.stats import invgamma
-from scipy.interpolate import interp1d
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C
 from functs import *
@@ -238,11 +238,15 @@ def main():
             holdout_paths["observationData_holdout"]
         )
 
-        x_holdout_realspace = np.asarray(appDomain_holdout).reshape(-1)
+        x_holdout_realspace = as_domain_matrix(appDomain_holdout)
 
         y_holdout_realspace = np.asarray(observation_holdout).reshape(-1)
 
-        x_holdout_norm= (x_holdout_realspace - min_x) / (max_x - min_x)
+        x_holdout_norm = np.column_stack([
+            (x_holdout_realspace[:, j] - model_domain.iloc[:, j].min())
+            / (model_domain.iloc[:, j].max() - model_domain.iloc[:, j].min())
+            for j in range(x_holdout_realspace.shape[1])
+        ])
 
         y_holdout_norm = (y_holdout_realspace - y_mean) / y_std
 
@@ -253,7 +257,10 @@ def main():
         })
 
         holdout_data_normalized = pd.DataFrame({
-            'x': (x_holdout_realspace - min_x) / (max_x - min_x),
+            **{
+                f"x_{j}": x_holdout_norm[:, j]
+                for j in range(x_holdout_norm.shape[1])
+            },
             'y': (y_holdout_realspace - y_mean) / y_std
         })
 
@@ -302,11 +309,11 @@ def main():
         print(f'Generating raw data figures in normalized space...')
         generate_rawData_figure(model_normalized, observation_normalized, figure_path, figure_name="raw_data_normalized.png", suptitle="Raw Data (Normalized Space)")
 
-    x_sim = model_normalized[[col for col in model_normalized.columns if col.startswith('x_')]].values.reshape(-1,1)
+    x_sim = as_domain_matrix(model_normalized[[col for col in model_normalized.columns if col.startswith('x_')]].values)
     theta_sim = model_normalized[[col for col in model_normalized.columns if col.startswith('theta_')]].values
     y_sim = model_normalized[[col for col in model_normalized.columns if col.startswith('zeta_') and not col.endswith('_mean') and not col.endswith('_std')]].values
 
-    x_obs = observation_normalized[[col for col in observation_normalized.columns if col.startswith('x_')]].values.reshape(-1,1)
+    x_obs = as_domain_matrix(observation_normalized[[col for col in observation_normalized.columns if col.startswith('x_')]].values)
     y_obs = observation_normalized[[col for col in observation_normalized.columns if col.startswith('zeta_')]].values
 
     print("Simulator design shape:", x_sim.shape, theta_sim.shape)
@@ -425,15 +432,8 @@ def main():
         for k, label in enumerate(theta_labels):
 
             # interpolate constitutive theta field from simulation points
-            interp_theta = interp1d(
-                x_sim.flatten(),
-                theta_sim[:, k],
-                kind="linear",
-                fill_value="extrapolate"
-            )
-
-            theta_fixed[:, k] = interp_theta(
-                x_obs.flatten()
+            theta_fixed[:, k] = interpolate_domain_field(
+                x_sim, theta_sim[:, k], x_obs
             )
 
             min_val = model_data[f"theta_{label}"].min()
@@ -775,7 +775,6 @@ def main():
     
     # Build results dataframe with dynamic kappa columns
     results_data = {
-        "x_obs": x_obs.flatten(),
         "zeta_obs": y_obs.flatten(),
         # "x_sim": model_normalized[[col for col in model_normalized.columns if col.startswith('x_')]].values.flatten(),
         # "xi_sim": model_normalized[[col for col in model_normalized.columns if col.startswith('y_') and not col.endswith('_mean') and not col.endswith('_std')]].values.flatten(),
@@ -784,6 +783,10 @@ def main():
         "delta_eta_mean": delta_eta_mean,
         "delta_eta_std": delta_eta_std,
     }
+    for j, x_col in enumerate([col for col in model_normalized.columns if col.startswith("x_")]):
+        results_data[f"x_obs_{x_col.replace('x_', '')}"] = x_obs[:, j]
+    # Preserve the legacy single-domain column as the first coordinate.
+    results_data["x_obs"] = x_obs[:, 0]
     
     # Add kappa mean and std for each theta dimension
     for k in range(dtheta):
@@ -808,7 +811,8 @@ def main():
         x_stats = reverse_normalization["x"][x_col]
         x_min, x_max = x_stats["min"], x_stats["max"]
         x_label = x_col.replace('x_', '')
-        x_phys = results_normalized["x_obs"].values * (x_max - x_min) + x_min
+        x_norm_col = f"x_obs_{x_label}"
+        x_phys = results_normalized[x_norm_col].values * (x_max - x_min) + x_min
         results_data_physical[f"x_obs_{x_label}"] = x_phys
     
     # Observation data (zeta columns) - reverse-normalize using y stats (same normalization applied)
@@ -872,28 +876,28 @@ def main():
         # interpolate the kappa and delta fields to the holdout x values
         for k in range(dtheta):
 
-            interp = interp1d(
-                results_normalized["x_obs"],
-                kappa_mean[k],
-                kind="cubic",
-                fill_value="extrapolate"
+            kappa_holdout[k] = interpolate_domain_field(
+                x_obs, kappa_mean[k], x_holdout_norm
             )
 
-            kappa_holdout[k] = interp(x_holdout_norm)
-
-        delta_interp = interp1d(
-            results_normalized["x_obs"],
-            delta_eta_mean,
-            kind="cubic",
-            fill_value="extrapolate"
+        delta_holdout = interpolate_domain_field(
+            x_obs, delta_eta_mean, x_holdout_norm
         )
 
-        delta_holdout = delta_interp(x_holdout_norm)
+        if theta_fixed.ndim == 2:
+            theta_holdout_base = np.column_stack([
+                interpolate_domain_field(x_obs, theta_fixed[:, k], x_holdout_norm)
+                for k in range(dtheta)
+            ])
+        else:
+            theta_holdout_base = theta_fixed
 
         # compute the posterior predictive mean for the holdout points
         for i in range(len(x_holdout_norm)):
 
-            theta_star = get_theta_at_obs(theta_fixed, i) + kappa_holdout[:, i]
+            theta_star = (
+                theta_holdout_base[i] if theta_fixed.ndim == 2 else theta_holdout_base
+            ) + kappa_holdout[:, i]
 
             m_i, s2_i = eta_predict(
                 x_holdout_norm[i],
@@ -988,10 +992,11 @@ def main():
         # reconduct the prior in real-space (reverse-normalize the emulator predictions) for visualization purposes
         x_col = [col for col in model_normalized.columns if col.startswith('x_')][0]
         x_label = x_col.replace('x_', '')
-        x_obs_phys = results_physical[f'x_obs_{x_label}'].values
-        x_min = reverse_normalization["x"][x_col]["min"]
-        x_max = reverse_normalization["x"][x_col]["max"]
-        x_obs_norm = (x_obs_phys - x_min) / (x_max - x_min)
+        x_obs_phys = np.column_stack([
+            results_physical[f"x_obs_{label}"].values
+            for label in app_labels
+        ])
+        x_obs_norm = x_obs.copy()
         # Z_obs=np.hstack([x_obs_norm.reshape(-1,1), 
                         #  np.tile(theta_fixed_arr, 
                         #          (x_obs_norm.shape[0], 1))])
@@ -1010,7 +1015,7 @@ def main():
             raise ValueError(f"Unknown theta initialization: {theta_init}")
 
         Z_obs = np.hstack([
-            x_obs_norm.reshape(-1,1),
+            x_obs_norm,
             theta_block
         ])
         y_prior_mean_norm = gp_eta.predict(Z_obs)
@@ -1019,7 +1024,7 @@ def main():
         y_prior_var_phys = y_prior_var_norm * (y_sd ** 2)
 
         plot_discrepancy_diagnostics(
-            results_physical[f'x_obs_{x_label}'].values,
+            x_obs_phys,
             results_physical[f'zeta_obs_{y_label}'].values,
             model_data[[col for col in model_data.columns if col.startswith('x')]],
             model_data[[col for col in model_data.columns if col.startswith('zeta')]],
@@ -1054,13 +1059,22 @@ def main():
         print("theta_fixed.shape:", np.shape(theta_fixed))
 
 
+        theta_block_norm = (
+            np.tile(theta_fixed, (len(x_obs), 1))
+            if theta_fixed.ndim == 1 else theta_fixed
+        )
+        y_prior_obs_norm = gp_eta.predict(np.hstack([x_obs, theta_block_norm]))
+        y_prior_obs_var_norm = np.diag(
+            gp_eta.predict(np.hstack([x_obs, theta_block_norm]), return_cov=True)[1]
+        )
+
         plot_discrepancy_diagnostics(
-            results_normalized['x_obs'].values,
+            x_obs,
             results_normalized['zeta_obs'].values,
             model_normalized[[col for col in model_normalized.columns if col.startswith('x')]],
             model_normalized[[col for col in model_normalized.columns if col.startswith('zeta')]],
-            y_prior_mean,
-            y_prior_var,
+            y_prior_obs_norm,
+            y_prior_obs_var_norm,
             results_normalized['delta_eta_mean'].values,
             results_normalized['delta_eta_std'].values,
             results_normalized['y_post_mean'].values,
@@ -1115,7 +1129,7 @@ def main():
         )
 
         plot_relative_contributions(
-            x=results_physical[f'x_obs_{x_label}'].values,
+            x=x_obs_phys,
             contrib=contrib,
             figure_path=figure_path,
             save_name="relative_contributions.png",
@@ -1210,7 +1224,7 @@ def main():
                     "functions"
                 ][k]
 
-                x_vals = x_obs_phys.flatten()
+                x_vals = x_obs_phys[:, 0]
 
                 if func == "sin":
                     theta_true_k = np.sin(x_vals)
@@ -1228,7 +1242,7 @@ def main():
                 m = known_theta_params["m"][k]
                 b = known_theta_params["b"][k]
 
-                x_vals = x_obs_phys.flatten()
+                x_vals = x_obs_phys[:, 0]
 
                 theta_true_k = m * x_vals + b
 
@@ -1320,7 +1334,7 @@ def main():
                 ][known_delta_form]
             )
 
-            x_val = x_obs_phys.flatten()
+            x_val = x_obs_phys[:, 0]
 
             if known_delta_form == "power_law":
 

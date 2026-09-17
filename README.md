@@ -152,6 +152,16 @@ It includes settings for:
 
 CAKED-UP expects column-wise text files with one sample per row.
 
+`appDomain.txt` may contain any number of application-domain columns. Each
+header defines one coordinate (for example, `temperature,pressure`), and the
+same columns must appear in the model and observation files. Domain rows are
+kept as vectors throughout emulator training, discrepancy sampling, holdout
+prediction, and result files; they are not flattened into a single coordinate.
+The posterior correction is therefore inferred at each observed domain vector.
+Diagnostic plots that use an x-axis are emitted once per domain coordinate
+(`*_x0.png`, `*_x1.png`, ...), so the inferred parameter correction can be
+examined against every coordinate independently.
+
 Example directory structure:
 
 ```text
