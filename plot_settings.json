@@ -1,0 +1,24 @@
+{
+  "observation_data_label": "SyntheticObservation",
+  "simulation_data_label": "Synthetic Experiment",
+  "emulator_prior_label": "$\\mathcal{E}(x,\\eta(x))$",
+  "posterior_mean_label": "Posterior Mean",
+  "posterior_prediction_label": "Posterior prediction",
+  "holdout_data_label": "Holdout data",
+  "holdout_title": "Holdout Posterior Prediction",
+  "observation_value_label": "y",
+  "correction_label": "Correction",
+  "delta_eta_mean_label": "$\\delta_\\eta$ mean",
+  "application_domain_labels": {
+    "0": "x",
+    "1": "x_1",
+    "2": "x_2",
+    "3": "x_3"
+  },
+  "calibration_parameter_labels": {
+    "0": "$\\kappa_0$",
+    "1": "$\\kappa_1$",
+    "2": "$\\kappa_2$",
+    "3": "$\\kappa_3$"
+  }
+}

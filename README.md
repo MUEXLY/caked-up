@@ -113,9 +113,12 @@ Then proceed with the virtual environment setup described above.
 
 ---
 
-# Configuration File
+# Configuration Files
 
 The `config.json` file provides the primary interface for configuring a calibration study.
+Plot labels can be kept in a separate JSON file by setting
+`plot_settings_path` relative to the calibration config. This keeps calibration
+and visualization settings independent.
 
 It includes settings for:
 
@@ -144,6 +147,88 @@ It includes settings for:
 - Diagnostic plots
 - Saved posterior data
 - Trained emulator models
+
+## Plot Settings
+
+`plot_settings.json` supports formatted labels for observed data, simulator
+data, posterior predictions, each application-domain coordinate, and each
+calibration parameter. Domain and parameter labels are selected by zero-based
+index:
+
+```json
+{
+  "observation_data_label": "Observed measurements",
+  "simulation_data_label": "Simulator runs",
+  "application_domain_labels": {
+    "0": "$T$ (K)",
+    "1": "$P$ (MPa)"
+  },
+  "calibration_parameter_labels": {
+    "0": "$\\theta_1$",
+    "1": "$\\theta_2$"
+  }
+}
+```
+
+The plotting code retains its existing labels when `plot_settings_path` is
+omitted.
+
+Set `prior_posterior_comparison` to create a two-row comparison figure. The
+top row overlays the physical simulator-input distributions with the posterior
+distribution of \(\theta^0+\kappa\). The bottom row overlays each configured
+hyperprior with its sampled posterior for GP, lasso, fused-lasso, horseshoe,
+and spike-slab shrinkage priors.
+
+Kappa diagnostic panels shade each parameter's simulator prior range relative
+to the utilized $\theta^0$ value, identify the corresponding $\theta$ parameter,
+and annotate the physical $\theta^0$ used for initialization. Normalized
+diagnostics show the same range in normalized coordinates.
+
+The emulator sensitivity diagnostics can be enabled in
+`output_settings.figure_options` with `emulator_sensitivity_boxplot` and
+`emulator_sensitivity_pca`. Both diagnostics use finite-difference derivatives
+of the trained emulator with respect to the normalized calibration parameters.
+The boxplot ranks the absolute local sensitivities by median magnitude; the PCA
+figure shows the principal directions of the standardized sensitivity vectors.
+
+The GP hyperparameter diagnostics can be enabled with
+`hyperprior_updates`. The resulting figure overlays each MCMC trace with the
+configured log-scale hyperprior's 95% interval, median, and initial value.
+`hyperprior_updates_animation` additionally writes a GIF showing the updates
+as the chain progresses. Hyperparameter states are printed every 50 MCMC
+iterations.
+
+`hyperprior_density_animation` adds a second GIF in which each current
+hyperparameter state is shown on its configured hyperprior density. It supports
+GP (`ell` and `var`), lasso and fused-lasso (`lambda`), and spike-slab (`pi`)
+shrinkage priors. The displayed density is the configured hyperprior; the
+highlighted point is the current Gibbs/MCMC state.
+
+Set `calibration_prediction_animation` to create a calibration-progress GIF.
+Each frame shows the cumulative posterior mean and uncertainty for every
+`\kappa` field, the additive discrepancy `\delta_\eta`, and the full posterior
+predictive response against the observations. Use
+`calibration_prediction_animation_space` to select `"physical"` or
+`"normalized"` units.
+
+## External Validation
+
+An IB-style external-validation figure can be enabled with
+`validation_options.external_validation`. The CSV must contain one column for
+each application-domain coordinate, one observation column, and one column for
+each calibration parameter. The figure shows the calibration posterior
+predictive interval, external observations, corrected parameter values, and
+external predictions formed from the corrected parameters **plus the learned
+additive discrepancy**. Each parameter panel includes the calibration prior,
+the calibration posterior prediction, and the parameter value supplied by the
+external validation file.
+
+For multivariate domains, set `domain_columns` in model-coordinate order and
+choose the coordinate shown on the x-axis with `plot_domain_index`. The
+additive discrepancy and parameter corrections are interpolated along that
+displayed coordinate. Use `y_scale` to convert external response values into
+the calibration response units; for example, use `1.0e-6` when the external
+response is in Pa and calibration is in MPa.
 - Post-processing outputs
 
 ---

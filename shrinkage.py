@@ -86,7 +86,12 @@ class GPPrior(ShrinkagePrior):
         alpha = np.linalg.solve(L.T, np.linalg.solve(L, z))
         logdet = 2*np.sum(np.log(np.diag(L)))
 
-        return -0.5 * (z @ alpha)   # <<< DROP logdet TEMPORARILY
+        n = len(z)
+        return -0.5 * (
+            z @ alpha
+            + logdet
+            + n * np.log(2 * np.pi)
+        )
 
     def sample_kappa_field(
         self,
