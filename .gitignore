@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Calibration GUI working configs and run artifacts
+gui_runs/

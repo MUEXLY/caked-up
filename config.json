@@ -142,9 +142,8 @@
 
         "obs_data_path": "/Users/liammyhill/Desktop/gitLocal/MUEXLY/caked-up/studyNo1/observationData/",
 
-        "input_delimiter": ",",
+        "input_delimiter": ","
 
-        "input_header": true
     },
     "cross_validation_settings":{
 
@@ -202,7 +201,30 @@
 
     },
     
-    "plot_settings_path": "plot_settings.json",
+    "plot_settings": {
+        "observation_data_label": "SyntheticObservation",
+        "simulation_data_label": "Synthetic Experiment",
+        "emulator_prior_label": "$\\mathcal{E}(x,\\eta(x))$",
+        "posterior_mean_label": "Posterior Mean",
+        "posterior_prediction_label": "Posterior prediction",
+        "holdout_data_label": "Holdout data",
+        "holdout_title": "Holdout Posterior Prediction",
+        "observation_value_label": "y",
+        "correction_label": "Correction",
+        "delta_eta_mean_label": "$\\delta_\\eta$ mean",
+        "application_domain_labels": {
+            "0": "x",
+            "1": "x_1",
+            "2": "x_2",
+            "3": "x_3"
+        },
+        "calibration_parameter_labels": {
+            "0": "$\\kappa_0$",
+            "1": "$\\kappa_1$",
+            "2": "$\\kappa_2$",
+            "3": "$\\kappa_3$"
+        }
+    },
 
     "validation_options": {
         "external_validation": {

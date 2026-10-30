@@ -788,6 +788,77 @@ def plot_hyperparameter_density_animation(
     return path
 
 
+def plot_hyperparameter_density_state(
+    current_values,
+    hyperparameter_specs,
+    figures_directory,
+    filename="hyperparameter_density_live.png",
+    iteration=None,
+):
+    """Save a single prior-density frame for live sampler monitoring."""
+    if len(current_values) != len(hyperparameter_specs) or not hyperparameter_specs:
+        return None
+
+    distributions = []
+    grids = []
+    for value, spec in zip(current_values, hyperparameter_specs):
+        kind = spec["kind"]
+        prior = spec["prior"]
+        if kind == "lognormal":
+            dist = lognorm(s=float(prior["sigma"]), scale=np.exp(float(prior["mu"])))
+        elif kind == "gamma":
+            dist = gamma_distribution(a=float(prior["shape"]), scale=1.0 / float(prior["rate"]))
+        elif kind == "beta":
+            dist = beta_distribution(a=float(prior["alpha"]), b=float(prior["beta"]))
+        else:
+            continue
+        current = float(value)
+        lower = max(float(dist.ppf(1e-4)), current * 0.5, 1e-12)
+        upper = max(float(dist.ppf(1 - 1e-4)), current * 1.5, lower * 10.0)
+        if not np.isfinite(lower) or lower <= 0:
+            lower = max(current * 0.5, 1e-12)
+        if not np.isfinite(upper) or upper <= lower:
+            upper = lower * 100.0
+        distributions.append(dist)
+        grids.append(np.geomspace(lower, upper, 400))
+
+    count = len(distributions)
+    if not count:
+        return None
+    columns = 2 if count > 1 else 1
+    rows = int(np.ceil(count / columns))
+    fig, axes = plt.subplots(rows, columns, figsize=(6.0 * columns, 3.8 * rows), squeeze=False)
+    for index, (ax, current, spec, dist, grid) in enumerate(
+        zip(axes.ravel(), current_values, hyperparameter_specs, distributions, grids)
+    ):
+        current = float(current)
+        density = dist.pdf(grid)
+        ax.plot(grid, density, color="tab:blue", linewidth=2)
+        if np.isfinite(current) and current > 0:
+            band = np.clip([current / 1.08, current * 1.08], grid[0], grid[-1])
+            mask = (grid >= band[0]) & (grid <= band[1])
+            if np.any(mask):
+                ax.fill_between(grid[mask], density[mask], color="tab:red", alpha=0.35)
+            ax.axvline(current, color="tab:red", linestyle="--", linewidth=2, label=f"Current = {current:.4g}")
+            ax.legend(loc="best")
+        ax.set_xscale("log")
+        ax.set_xlabel(spec["name"])
+        ax.set_ylabel("Prior density")
+        suffix = f" — iteration {iteration}" if iteration is not None else ""
+        ax.set_title(f'{spec["label"]} ({spec["kind"]}){suffix}')
+        ax.grid(True, alpha=0.25)
+    for ax in axes.ravel()[count:]:
+        ax.set_visible(False)
+    fig.tight_layout()
+    os.makedirs(figures_directory, exist_ok=True)
+    path = os.path.join(figures_directory, filename)
+    temporary = f"{path}.tmp.png"
+    fig.savefig(temporary, dpi=110)
+    plt.close(fig)
+    os.replace(temporary, path)
+    return path
+
+
 def plot_calibration_prediction_animation(
     x_obs,
     y_obs,

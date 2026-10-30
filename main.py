@@ -56,6 +56,9 @@ def main():
     figure_options = output_settings["figure_options"]
 
     results_options = output_settings["results_options"]
+    live_monitor_enabled = bool(output_settings.get("live_monitor", False))
+    live_monitor_path = output_settings.get("live_monitor_path")
+    live_monitor_interval = max(int(output_settings.get("live_monitor_interval", 25)), 1)
     validation_options = config.get("validation_options", {})
 
     # Plot labels are kept separate from the calibration settings when desired.
@@ -626,6 +629,10 @@ def main():
 
     density_traces = []
     density_specs = []
+    live_density_stride = max(
+        1,
+        int(figure_options.get("hyperprior_density_animation_stride", 100)),
+    )
 
     def register_density_hyperparameters(prior, label):
         if prior.name == "gp":
@@ -826,6 +833,22 @@ def main():
                 )
                 density_state_index += 1
 
+        if (
+            figure_options.get("hyperprior_density_animation", False)
+            and density_specs
+            and ((it + 1) % live_density_stride == 0 or it + 1 == Nmcmc)
+        ):
+            try:
+                plot_hyperparameter_density_state(
+                    [trace[-1] for trace in density_traces],
+                    density_specs,
+                    figure_path,
+                    filename="hyperparameter_density_live.png",
+                    iteration=it + 1,
+                )
+            except (OSError, ValueError, KeyError, IndexError) as exc:
+                print(f"Could not update live hyperparameter density: {exc}")
+
         # ---- Gibbs update σ² ----
         sigma2 = gibbs_sigma2(
         y_obs,
@@ -855,6 +878,42 @@ def main():
             theta_star_chain[it] = theta_fixed.T + kappa_theta
         delta_eta_chain[it] = delta_eta
         sigma2_chain[it] = sigma2
+
+        if (
+            live_monitor_enabled
+            and live_monitor_path
+            and ((it + 1) % live_monitor_interval == 0 or it + 1 == Nmcmc)
+        ):
+            live_indices = np.linspace(
+                0, No - 1, min(No, 500), dtype=int
+            )
+            theta_base = (
+                np.tile(theta_fixed, (No, 1))
+                if theta_fixed.ndim == 1
+                else theta_fixed
+            )
+            theta_current = theta_base[live_indices] + kappa_theta.T[live_indices]
+            live_inputs = np.hstack([x_obs[live_indices], theta_current])
+            live_mean, live_std = gp_eta.predict(live_inputs, return_std=True)
+            live_mean = live_mean + delta_eta[live_indices]
+            live_uncertainty = np.sqrt(live_std**2 + sigma2)
+            live_x = (
+                x_obs[live_indices, 0]
+                if x_obs.shape[1] == 1
+                else live_indices.astype(float)
+            )
+            live_payload = {
+                "iteration": int(it + 1),
+                "total_iterations": int(Nmcmc),
+                "x": live_x.tolist(),
+                "observed": y_obs[live_indices, 0].tolist(),
+                "predicted": live_mean.tolist(),
+                "uncertainty": live_uncertainty.tolist(),
+            }
+            live_temp_path = f"{live_monitor_path}.tmp"
+            with open(live_temp_path, "w") as stream:
+                json.dump(live_payload, stream)
+            os.replace(live_temp_path, live_monitor_path)
 
         # ---- diagnostics ----
         if (it+1) % 50 == 0:

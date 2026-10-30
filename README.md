@@ -36,6 +36,10 @@ CAKED-UP is designed to streamline calibration workflows for simulation-based sc
 caked-up/
 ├── main.py
 ├── config.json
+├── calibration_gui.py
+├── logos/
+├── frameworks/
+│   └── integrated_delta/    # IB predecessor, included in this repository
 ├── requirements.txt
 ├── sweep.py
 ├── post_process_sweep.py
@@ -116,9 +120,8 @@ Then proceed with the virtual environment setup described above.
 # Configuration Files
 
 The `config.json` file provides the primary interface for configuring a calibration study.
-Plot labels can be kept in a separate JSON file by setting
-`plot_settings_path` relative to the calibration config. This keeps calibration
-and visualization settings independent.
+Plot labels are configured in the `plot_settings` object in `config.json` and
+edited in the GUI's Plot Labels settings tab.
 
 It includes settings for:
 
@@ -150,7 +153,7 @@ It includes settings for:
 
 ## Plot Settings
 
-`plot_settings.json` supports formatted labels for observed data, simulator
+The `plot_settings` object supports formatted labels for observed data, simulator
 data, posterior predictions, each application-domain coordinate, and each
 calibration parameter. Domain and parameter labels are selected by zero-based
 index:
@@ -170,7 +173,7 @@ index:
 }
 ```
 
-The plotting code retains its existing labels when `plot_settings_path` is
+The plotting code retains its existing labels when individual settings are
 omitted.
 
 Set `prior_posterior_comparison` to create a two-row comparison figure. The
@@ -296,6 +299,29 @@ To submit a single calibration case:
 ```bash
 sbatch submit_single.sbatch
 ```
+
+# Desktop GUI
+
+Launch the local desktop workflow for either calibration framework:
+
+```bash
+python3 calibration_gui.py
+```
+
+The GUI provides framework selection, typed config controls, live calibration
+output, and previews of figures and result artifacts. Boolean settings use
+checkboxes; numeric and string settings use text fields. Select five headered
+tables for simulator domain, simulator parameters, simulator outputs,
+observation domain, and observations. CSV, TSV, whitespace text, and XLSX are
+accepted; the GUI detects separators and stages a consistent tab-delimited
+copy for either framework. It also streams a live normalized prediction view
+while MCMC runs and plays both the calibration prediction and
+hyperparameter-on-prior-density GIFs in separate run side panes. The analysis
+preview includes scrollbars for oversized figures and text artifacts. The IB
+predecessor is included under `frameworks/integrated_delta/` and
+uses the shared root requirements. The GUI writes run configs and outputs
+under the ignored `gui_runs/` directory and does not overwrite either source
+config.
 
 ---
 
