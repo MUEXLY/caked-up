@@ -3,6 +3,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, PillowWriter
 import os
+from scipy.integrate import trapezoid
 from scipy.stats import beta as beta_distribution
 from scipy.stats import gamma as gamma_distribution
 from scipy.stats import lognorm
@@ -987,7 +988,7 @@ def plot_prior_posterior_comparison(
             spread = max(abs(values[0]) * 0.05, 1e-8)
             grid = np.linspace(values[0] - spread, values[0] + spread, points)
             density = np.exp(-0.5 * ((grid - values[0]) / (spread / 2)) ** 2)
-            density /= np.trapz(density, grid)
+            density /= trapezoid(density, grid)
             return grid, density
         grid = np.linspace(values.min(), values.max(), points)
         return grid, gaussian_kde(values)(grid)

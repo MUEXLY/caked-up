@@ -342,6 +342,23 @@ python3 post_process_sweep.py
 python3 sensitivity_analysis/sensitivity_analysis.py
 ```
 
+## Sequential Calibration
+
+Sequential runs carry each run's post-burn-in shrinkage hyperparameter
+posterior into the next run. This supports GP, lasso, fused lasso, and
+spike-slab priors for the kappa fields. Edit `sequential_config.json` to choose
+`run_count`, the base calibration config, and the output directory, then submit
+one SLURM job:
+
+```bash
+sbatch run_sequential.sbatch
+```
+
+Each run is saved under its own numbered directory. The first run initializes
+each supported hyperparameter at the mean of its configured prior. Later runs
+fit the corresponding prior family to the previous run's posterior samples and
+start at the fitted distribution's mean.
+
 ---
 
 # Optuna Hyperparameter Optimization

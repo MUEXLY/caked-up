@@ -41,37 +41,37 @@
                 "shrinkage_prior": "gp",
 
                 "gp": {
-                    "ell_init": 0.1,
+                    "ell_init": 0.01,
                     "var_init": 0.3,
 
                     "ell_prior": {
-                        "mu": 0.3,
-                        "sigma": 0.5
+                        "mu": 0.1,
+                        "sigma": 0.05
                     },
 
                     "var_prior": {
                         "mu": 0.05,
-                        "sigma": 0.5
+                        "sigma": 0.05
                     }
                 }
             },
 
             "kappa": {
 
-                "shrinkage_prior": "gp",
+                "shrinkage_prior": "lasso",
                 "groups": false,
 
                 "gp": {
-                    "ell_init": 10,
-                    "var_init": 0.1,
+                    "ell_init": 0.01,
+                    "var_init": 0.001,
 
                     "ell_prior": {
-                        "mu": 0.3,
-                        "sigma": 0.5
+                        "mu": 0.1,
+                        "sigma": 0.005
                     },
 
                     "var_prior": {
-                        "mu": 0.05,
+                        "mu": 0.005,
                         "sigma": 0.5
                     }
                 },
@@ -188,7 +188,7 @@
             },
 
             "trig_funct": {
-                "function": "sin"
+                "function": "cos"
             }
         },
 
@@ -206,7 +206,7 @@
 
     "validation_options": {
         "external_validation": {
-            "enabled": true,
+            "enabled": false,
             "csv_path": "/Users/liammyhill/Library/CloudStorage/Box-Box/calibrationResults/crss_Calibration/edge/integratedDeltaValidation/outputs/crss_pa_results.csv",
             "domain_columns": ["measuredSeparation(b)"],
             "plot_domain_index": 0,

@@ -1,0 +1,5 @@
+{
+  "base_config": "config.json",
+  "run_count": 3,
+  "output_path": "results/sequential"
+}
