@@ -1,7 +1,7 @@
 {
     "calibration_settings":{
 
-        "N_mcmc": 10000,
+        "N_mcmc": 20000,
 
         "burn_in": 1000,
 
@@ -27,7 +27,7 @@
 
         "target_accept": 0.35,
 
-        "mh_scale_kappa_prior": 0.01,
+        "mh_scale_kappa_prior": 0.5,
 
         "mh_scales":{
             "log_ell_kappa": 0.1,
@@ -58,7 +58,7 @@
 
             "kappa": {
 
-                "shrinkage_prior": "spike_slab",
+                "shrinkage_prior": "gp",
                 "groups": false,
 
                 "gp": {
@@ -138,19 +138,19 @@
     },
     "input_settings":{
 
-        "model_data_path": "/home/liammyhill/gitLocal/dislocOKMC_enrique/analyticalModelPredictions/",
+        "model_data_path": "/Users/liammyhill/Desktop/gitLocal/MUEXLY/caked-up/studyNo1/modelData/",
 
-        "obs_data_path": "/home/liammyhill/gitLocal/dislocOKMC_enrique/observationData_okmc/",
+        "obs_data_path": "/Users/liammyhill/Desktop/gitLocal/MUEXLY/caked-up/studyNo1/observationData/",
 
         "input_delimiter": ",",
 
-        "input_header": false
+        "input_header": true
     },
     "cross_validation_settings":{
 
-        "conduct_cross_validation": false,
+        "conduct_cross_validation": true,
 
-        "known_theta_form": "trig_funct",
+        "known_theta_form": "constant",
 
         "known_theta_form_params": {
 
@@ -202,6 +202,25 @@
 
     },
     
+    "plot_settings_path": "plot_settings.json",
+
+    "validation_options": {
+        "external_validation": {
+            "enabled": true,
+            "csv_path": "/Users/liammyhill/Library/CloudStorage/Box-Box/calibrationResults/crss_Calibration/edge/integratedDeltaValidation/outputs/crss_pa_results.csv",
+            "domain_columns": ["measuredSeparation(b)"],
+            "plot_domain_index": 0,
+            "y_column": "crss_pa",
+            "y_scale": 1.0e-6,
+            "parameter_columns": {
+                "coreSize": "coreSize",
+                    "mu": "mu_0",
+                    "nu": "nu"
+            },
+            "figure_filename": "external_validation.png"
+        }
+    },
+
     "output_settings":{
 
         "figures_path": "figures/",
@@ -234,7 +253,45 @@
 
             "variance_decomposition": true,
 
-            "relative_contributions": true
+            "relative_contributions": true,
+
+            "emulator_sensitivity_boxplot": true,
+
+            "emulator_sensitivity_boxplot_filename": "emulator_sensitivity_boxplot.png",
+
+            "emulator_sensitivity_pca": true,
+
+            "emulator_sensitivity_pca_filename": "emulator_sensitivity_pca.png"
+            ,
+            "hyperprior_updates": true,
+
+            "hyperprior_updates_filename": "hyperparameter_updates.png",
+
+            "hyperprior_updates_animation": true,
+
+            "hyperprior_updates_animation_filename": "hyperparameter_updates.gif",
+
+            "hyperprior_updates_animation_stride": 100
+            ,
+            "calibration_prediction_animation": true,
+
+            "calibration_prediction_animation_space": "physical",
+
+            "calibration_prediction_animation_filename": "calibration_prediction_updates.gif",
+
+            "calibration_prediction_animation_stride": 100,
+
+            "calibration_prediction_animation_samples": 200,
+
+            "prior_posterior_comparison": true,
+
+            "prior_posterior_comparison_filename": "prior_posterior_comparison.png",
+
+            "hyperprior_density_animation": true,
+
+            "hyperprior_density_animation_filename": "hyperparameter_density_updates.gif",
+
+            "hyperprior_density_animation_stride": 100
         },
 
         "results_path": "results/",

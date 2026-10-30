@@ -1,16 +1,17 @@
 import sys
+import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.linalg import cholesky, cho_solve
 from scipy.stats import multivariate_normal, norm
 from scipy.stats import invgamma
-from scipy.interpolate import interp1d
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C
 from functs import *
 from shrinkage import *
 from plottingFuncts import *
+from plottingFuncts import _plot_label
 import json
 
 def main():
@@ -54,6 +55,29 @@ def main():
     figure_options = output_settings["figure_options"]
 
     results_options = output_settings["results_options"]
+    validation_options = config.get("validation_options", {})
+
+    # Plot labels are kept separate from the calibration settings when desired.
+    # A dictionary is also accepted for backwards-compatible single-file configs.
+    plot_settings = config.get("plot_settings", {})
+    if isinstance(plot_settings, str):
+        plot_settings_path = plot_settings
+        if not os.path.isabs(plot_settings_path):
+            plot_settings_path = os.path.join(
+                os.path.dirname(os.path.abspath(config_path)),
+                plot_settings_path,
+            )
+        with open(plot_settings_path, "r") as f:
+            plot_settings = json.load(f)
+    elif "plot_settings_path" in config:
+        plot_settings_path = config["plot_settings_path"]
+        if not os.path.isabs(plot_settings_path):
+            plot_settings_path = os.path.join(
+                os.path.dirname(os.path.abspath(config_path)),
+                plot_settings_path,
+            )
+        with open(plot_settings_path, "r") as f:
+            plot_settings = json.load(f)
 
     # ------------------------------------------------------------
     # Flexible results path handling (HPC + Optuna compatible)
@@ -238,11 +262,15 @@ def main():
             holdout_paths["observationData_holdout"]
         )
 
-        x_holdout_realspace = np.asarray(appDomain_holdout).reshape(-1)
+        x_holdout_realspace = as_domain_matrix(appDomain_holdout)
 
         y_holdout_realspace = np.asarray(observation_holdout).reshape(-1)
 
-        x_holdout_norm= (x_holdout_realspace - min_x) / (max_x - min_x)
+        x_holdout_norm = np.column_stack([
+            (x_holdout_realspace[:, j] - model_domain.iloc[:, j].min())
+            / (model_domain.iloc[:, j].max() - model_domain.iloc[:, j].min())
+            for j in range(x_holdout_realspace.shape[1])
+        ])
 
         y_holdout_norm = (y_holdout_realspace - y_mean) / y_std
 
@@ -253,7 +281,10 @@ def main():
         })
 
         holdout_data_normalized = pd.DataFrame({
-            'x': (x_holdout_realspace - min_x) / (max_x - min_x),
+            **{
+                f"x_{j}": x_holdout_norm[:, j]
+                for j in range(x_holdout_norm.shape[1])
+            },
             'y': (y_holdout_realspace - y_mean) / y_std
         })
 
@@ -296,17 +327,27 @@ def main():
     # if rawData figure is to be output, run generate_raw_data_figures(model_data, obs_data, output_settings, results_path)
     if figure_options['data_priors_realspace']:
         print(f'Generating raw data figures in real space...')
-        generate_rawData_figure(model_data, obs_data, figure_path, figure_name="raw_data_realspace.png", suptitle="Raw Data (Physical Units)")
+        generate_rawData_figure(
+            model_data, obs_data, figure_path,
+            figure_name="raw_data_realspace.png",
+            suptitle="Raw Data (Physical Units)",
+            plot_settings=plot_settings,
+        )
 
     if figure_options['data_priors_normalized']:
         print(f'Generating raw data figures in normalized space...')
-        generate_rawData_figure(model_normalized, observation_normalized, figure_path, figure_name="raw_data_normalized.png", suptitle="Raw Data (Normalized Space)")
+        generate_rawData_figure(
+            model_normalized, observation_normalized, figure_path,
+            figure_name="raw_data_normalized.png",
+            suptitle="Raw Data (Normalized Space)",
+            plot_settings=plot_settings,
+        )
 
-    x_sim = model_normalized[[col for col in model_normalized.columns if col.startswith('x_')]].values.reshape(-1,1)
+    x_sim = as_domain_matrix(model_normalized[[col for col in model_normalized.columns if col.startswith('x_')]].values)
     theta_sim = model_normalized[[col for col in model_normalized.columns if col.startswith('theta_')]].values
     y_sim = model_normalized[[col for col in model_normalized.columns if col.startswith('zeta_') and not col.endswith('_mean') and not col.endswith('_std')]].values
 
-    x_obs = observation_normalized[[col for col in observation_normalized.columns if col.startswith('x_')]].values.reshape(-1,1)
+    x_obs = as_domain_matrix(observation_normalized[[col for col in observation_normalized.columns if col.startswith('x_')]].values)
     y_obs = observation_normalized[[col for col in observation_normalized.columns if col.startswith('zeta_')]].values
 
     print("Simulator design shape:", x_sim.shape, theta_sim.shape)
@@ -314,6 +355,12 @@ def main():
 
     dtheta = theta_sim.shape[1]
     No = len(x_obs)
+    theta_prior_min_phys = model_data[
+        [f"theta_{label}" for label in theta_labels]
+    ].min().to_numpy(dtype=float)
+    theta_prior_max_phys = model_data[
+        [f"theta_{label}" for label in theta_labels]
+    ].max().to_numpy(dtype=float)
 
     # ============================================================
     # 1c. Instantiate shrinkage prior objects based on config
@@ -353,6 +400,36 @@ def main():
     print("\nTrained emulator kernel:")
     print(gp_eta.kernel_)
 
+    parameter_indices = np.arange(x_sim.shape[1], Z_sim.shape[1])
+    sensitivity_labels = [
+        _plot_label(plot_settings, "calibration_parameter_labels", k, label)
+        for k, label in enumerate(theta_labels)
+    ]
+    if figure_options.get("emulator_sensitivity_boxplot", False):
+        plot_emulator_sensitivity_boxplot(
+            gp_eta,
+            Z_sim,
+            parameter_indices=parameter_indices,
+            parameter_labels=sensitivity_labels,
+            figures_directory=figure_path,
+            filename=figure_options.get(
+                "emulator_sensitivity_boxplot_filename",
+                "emulator_sensitivity_boxplot.png",
+            ),
+        )
+    if figure_options.get("emulator_sensitivity_pca", False):
+        plot_emulator_sensitivity_pca(
+            gp_eta,
+            Z_sim,
+            parameter_indices=parameter_indices,
+            parameter_labels=sensitivity_labels,
+            figures_directory=figure_path,
+            filename=figure_options.get(
+                "emulator_sensitivity_pca_filename",
+                "emulator_sensitivity_pca.png",
+            ),
+        )
+
     # save the following prior information: y_prior_mean,y_prior_var,delta_eta_mean,delta_eta_std,
     y_prior_mean = gp_eta.predict(Z_sim)
     y_prior_var = np.diag(gp_eta.predict(Z_sim, return_cov=True)[1])
@@ -360,7 +437,11 @@ def main():
     # if output_settings['eta_emulator_prior'] is true, run plot_emulator_prior(x_sim, y_sim, y_prior_mean, y_prior_var, model_data, model_normalized, output_settings['figures_path'], results_path)
     if figure_options['eta_emulator_prior']:
         print(f'Generating emulator prior figure...')
-        plot_emulator_prior(y_prior_mean, y_prior_var, model_data, model_normalized, reverse_normalization, figure_path, results_path)
+        plot_emulator_prior(
+            y_prior_mean, y_prior_var, model_data, model_normalized,
+            reverse_normalization, figure_path, results_path,
+            plot_settings=plot_settings,
+        )
 
     # intialize storage for deta eta
     delta_eta_mean = np.zeros(No)
@@ -425,15 +506,8 @@ def main():
         for k, label in enumerate(theta_labels):
 
             # interpolate constitutive theta field from simulation points
-            interp_theta = interp1d(
-                x_sim.flatten(),
-                theta_sim[:, k],
-                kind="linear",
-                fill_value="extrapolate"
-            )
-
-            theta_fixed[:, k] = interp_theta(
-                x_obs.flatten()
+            theta_fixed[:, k] = interpolate_domain_field(
+                x_sim, theta_sim[:, k], x_obs
             )
 
             min_val = model_data[f"theta_{label}"].min()
@@ -516,6 +590,86 @@ def main():
 
     # --- acceptance trace storage ---
     accept_trace = [[] for _ in range(dtheta)]
+
+    # GP hyperparameter diagnostics. The first trace row records the values
+    # before any MCMC update; subsequent rows record each sampler iteration.
+    hyperparameter_labels = []
+    hyperparameter_prior_configs = []
+    hyperparameter_initial_values = []
+    hyperparameter_sources = []
+    for k, prior in enumerate(kappa_priors):
+        if prior.name == "gp":
+            hyperparameter_labels.append(f"kappa_{k}")
+            hyperparameter_prior_configs.append(prior.config)
+            hyperparameter_initial_values.append([prior.ell, prior.var])
+            hyperparameter_sources.append(("kappa", k))
+    if delta_eta_prior.name == "gp":
+        hyperparameter_labels.append("delta_eta")
+        hyperparameter_prior_configs.append(delta_eta_prior.config)
+        hyperparameter_initial_values.append([delta_eta_prior.ell, delta_eta_prior.var])
+        hyperparameter_sources.append(("delta_eta", None))
+
+    hyperparameter_initial_values = np.asarray(hyperparameter_initial_values, dtype=float)
+    hyperparameter_trace = np.full(
+        (Nmcmc + 1, len(hyperparameter_sources), 2), np.nan
+    )
+    for h, (source, index) in enumerate(hyperparameter_sources):
+        prior = kappa_priors[index] if source == "kappa" else delta_eta_prior
+        hyperparameter_trace[0, h] = [prior.ell, prior.var]
+
+    density_traces = []
+    density_specs = []
+
+    def register_density_hyperparameters(prior, label):
+        if prior.name == "gp":
+            density_specs.extend([
+                {
+                    "label": label,
+                    "name": r"$\ell$",
+                    "kind": "lognormal",
+                    "prior": prior.config["ell_prior"],
+                },
+                {
+                    "label": label,
+                    "name": r"$\mathrm{var}$",
+                    "kind": "lognormal",
+                    "prior": prior.config["var_prior"],
+                },
+            ])
+            density_traces.extend([[prior.ell], [prior.var]])
+        elif prior.name in {"lasso", "fused_lasso"}:
+            density_specs.append({
+                "label": label,
+                "name": r"$\lambda$",
+                "kind": "gamma",
+                "prior": prior.config["lambda_prior"],
+            })
+            density_traces.append([prior.lam])
+        elif prior.name == "spike_slab":
+            density_specs.append({
+                "label": label,
+                "name": r"$\pi$",
+                "kind": "beta",
+                "prior": prior.config["pi_prior"],
+            })
+            density_traces.append([prior.pi])
+        elif prior.name == "horseshoe":
+            density_specs.append({
+                "label": label,
+                "name": r"$\tau$",
+                "kind": "halfcauchy",
+                "prior": {"scale": 1.0},
+            })
+            density_traces.append([
+                prior.tau.get(
+                    0 if label == "delta_eta" else int(label.rsplit("_", 1)[-1]),
+                    prior.tau_init,
+                )
+            ])
+
+    for k, prior in enumerate(kappa_priors):
+        register_density_hyperparameters(prior, f"kappa_{k}")
+    register_density_hyperparameters(delta_eta_prior, "delta_eta")
 
     # --- MH scaling adaptation settings ---
     burnin = calibration_settings['burn_in']
@@ -635,6 +789,32 @@ def main():
             allow_singular_cov=calibration_settings['allow_singular_cov']
         )
 
+        for h, (source, index) in enumerate(hyperparameter_sources):
+            prior = kappa_priors[index] if source == "kappa" else delta_eta_prior
+            hyperparameter_trace[it + 1, h] = [prior.ell, prior.var]
+
+        density_state_index = 0
+        for prior in [*kappa_priors, delta_eta_prior]:
+            if prior.name == "gp":
+                density_traces[density_state_index].append(prior.ell)
+                density_traces[density_state_index + 1].append(prior.var)
+                density_state_index += 2
+            elif prior.name in {"lasso", "fused_lasso"}:
+                density_traces[density_state_index].append(prior.lam)
+                density_state_index += 1
+            elif prior.name == "spike_slab":
+                density_traces[density_state_index].append(prior.pi)
+                density_state_index += 1
+            elif prior.name == "horseshoe":
+                index = (
+                    0 if prior is delta_eta_prior
+                    else kappa_priors.index(prior)
+                )
+                density_traces[density_state_index].append(
+                    prior.tau.get(index, prior.tau_init)
+                )
+                density_state_index += 1
+
         # ---- Gibbs update σ² ----
         sigma2 = gibbs_sigma2(
         y_obs,
@@ -671,15 +851,12 @@ def main():
             print(" sigma2 =", sigma2)
             print(" kappa acceptance rates:",
                 accept_kappa / (it+1))
-            # for k in range(dtheta):
-            #     print(
-            #         f"kappa prior {k}:",
-            #         kappa_priors[k].get_state()
-            #     )
-            # print(
-            #     "delta_eta prior:",
-            #     delta_eta_prior.get_state()
-            # )
+            for h, label in enumerate(hyperparameter_labels):
+                print(
+                    f" {label} hyperparameters:",
+                    f"ell={hyperparameter_trace[it + 1, h, 0]:.6g},",
+                    f"var={hyperparameter_trace[it + 1, h, 1]:.6g}",
+                )
             if orthogonalization_settings['orthogonalize_delta_eta']:
                 proj = G @ np.linalg.solve(G.T @ G, G.T @ delta_eta)
                 print("Projection norm (should be near 0):", np.linalg.norm(proj))
@@ -692,6 +869,132 @@ def main():
 
 
     print("\nSampler complete.")
+
+    if figure_options.get("prior_posterior_comparison", False):
+        theta_columns = [
+            col for col in model_data.columns if col.startswith("theta_")
+        ]
+        theta_scales = np.array([
+            reverse_normalization["theta"][col]["max"]
+            - reverse_normalization["theta"][col]["min"]
+            for col in theta_columns
+        ])
+        theta_offsets = np.array([
+            reverse_normalization["theta"][col]["min"]
+            for col in theta_columns
+        ])
+        theta_posterior_physical = (
+            theta_star_chain * theta_scales[None, :, None]
+            + theta_offsets[None, :, None]
+        ).transpose(0, 2, 1).reshape(-1, dtheta)
+        plot_prior_posterior_comparison(
+            theta_prior_physical=model_data[theta_columns].to_numpy(),
+            theta_posterior_physical=theta_posterior_physical,
+            theta_labels=theta_labels,
+            hyperparameter_traces=density_traces,
+            hyperparameter_specs=density_specs,
+            figures_directory=figure_path,
+            filename=figure_options.get(
+                "prior_posterior_comparison_filename",
+                "prior_posterior_comparison.png",
+            ),
+            burn_in=burnin,
+        )
+
+    if figure_options.get("calibration_prediction_animation", False):
+        animation_space = figure_options.get(
+            "calibration_prediction_animation_space", "physical"
+        ).lower()
+        if animation_space not in {"physical", "normalized"}:
+            raise ValueError(
+                "calibration_prediction_animation_space must be "
+                "'physical' or 'normalized'"
+            )
+
+        if animation_space == "physical":
+            x_column = next(
+                col for col in model_data.columns if col.startswith("x_")
+            )
+            x_stats = reverse_normalization["x"][x_column]
+            theta_columns = [
+                col for col in model_data.columns if col.startswith("theta_")
+            ]
+            animation_kwargs = {
+                "y_scale": y_std,
+                "y_offset": y_mean,
+                "x_scale": x_stats["max"] - x_stats["min"],
+                "x_offset": x_stats["min"],
+                "theta_scales": np.array([
+                    reverse_normalization["theta"][col]["max"]
+                    - reverse_normalization["theta"][col]["min"]
+                    for col in theta_columns
+                ]),
+                "theta_offsets": np.array([
+                    reverse_normalization["theta"][col]["min"]
+                    for col in theta_columns
+                ]),
+            }
+        else:
+            animation_kwargs = {}
+
+        plot_calibration_prediction_animation(
+            x_obs=x_obs,
+            y_obs=y_obs,
+            kappa_theta_chain=kappa_theta_chain,
+            delta_eta_chain=delta_eta_chain,
+            theta_fixed=theta_fixed,
+            gp_eta=gp_eta,
+            figures_directory=figure_path,
+            filename=figure_options.get(
+                "calibration_prediction_animation_filename",
+                "calibration_prediction_updates.gif",
+            ),
+            frame_stride=figure_options.get(
+                "calibration_prediction_animation_stride", 100
+            ),
+            max_posterior_samples=figure_options.get(
+                "calibration_prediction_animation_samples", 200
+            ),
+            theta_labels=theta_labels,
+            space_label=animation_space,
+            **animation_kwargs,
+        )
+
+    if figure_options.get("hyperprior_updates", False) and len(hyperparameter_sources):
+        animation_result = plot_hyperparameter_updates(
+            hyperparameter_trace=hyperparameter_trace,
+            hyperparameter_priors=hyperparameter_prior_configs,
+            initial_values=hyperparameter_initial_values,
+            parameter_labels=hyperparameter_labels,
+            figures_directory=figure_path,
+            filename=figure_options.get(
+                "hyperprior_updates_filename", "hyperparameter_updates.png"
+            ),
+            animation_filename=figure_options.get(
+                "hyperprior_updates_animation_filename",
+                "hyperparameter_updates.gif",
+            ),
+            make_animation=figure_options.get(
+                "hyperprior_updates_animation", False
+            ),
+            animation_stride=figure_options.get(
+                "hyperprior_updates_animation_stride", 100
+            ),
+        )
+
+    if figure_options.get("hyperprior_density_animation", False) and density_specs:
+        plot_hyperparameter_density_animation(
+            hyperparameter_traces=density_traces,
+            hyperparameter_specs=density_specs,
+            figures_directory=figure_path,
+            filename=figure_options.get(
+                "hyperprior_density_animation_filename",
+                "hyperparameter_density_updates.gif",
+            ),
+            animation_stride=figure_options.get(
+                "hyperprior_density_animation_stride", 100
+            ),
+        )
 
     # if results_options['parameter_traces'] is true, save all parameter traces (kappa_theta_chain, delta_eta_chain, sigma2_chain) to results_path in a single .txt file with appropriate headers
     if results_options['parameter_traces']:
@@ -775,7 +1078,6 @@ def main():
     
     # Build results dataframe with dynamic kappa columns
     results_data = {
-        "x_obs": x_obs.flatten(),
         "zeta_obs": y_obs.flatten(),
         # "x_sim": model_normalized[[col for col in model_normalized.columns if col.startswith('x_')]].values.flatten(),
         # "xi_sim": model_normalized[[col for col in model_normalized.columns if col.startswith('y_') and not col.endswith('_mean') and not col.endswith('_std')]].values.flatten(),
@@ -784,6 +1086,10 @@ def main():
         "delta_eta_mean": delta_eta_mean,
         "delta_eta_std": delta_eta_std,
     }
+    for j, x_col in enumerate([col for col in model_normalized.columns if col.startswith("x_")]):
+        results_data[f"x_obs_{x_col.replace('x_', '')}"] = x_obs[:, j]
+    # Preserve the legacy single-domain column as the first coordinate.
+    results_data["x_obs"] = x_obs[:, 0]
     
     # Add kappa mean and std for each theta dimension
     for k in range(dtheta):
@@ -808,7 +1114,8 @@ def main():
         x_stats = reverse_normalization["x"][x_col]
         x_min, x_max = x_stats["min"], x_stats["max"]
         x_label = x_col.replace('x_', '')
-        x_phys = results_normalized["x_obs"].values * (x_max - x_min) + x_min
+        x_norm_col = f"x_obs_{x_label}"
+        x_phys = results_normalized[x_norm_col].values * (x_max - x_min) + x_min
         results_data_physical[f"x_obs_{x_label}"] = x_phys
     
     # Observation data (zeta columns) - reverse-normalize using y stats (same normalization applied)
@@ -845,6 +1152,171 @@ def main():
     print("\nPhysical Results:")
     print(results_physical.head())
 
+    external_validation = validation_options.get("external_validation", {})
+    if external_validation.get("enabled", False):
+        csv_path = external_validation.get("csv_path")
+        if not csv_path:
+            raise ValueError(
+                "validation_options.external_validation.csv_path is required "
+                "when external validation is enabled"
+            )
+        if not os.path.isabs(csv_path):
+            csv_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), csv_path)
+        external_data = pd.read_csv(csv_path)
+
+        x_columns = [col for col in model_data.columns if col.startswith("x_")]
+        theta_columns = [col for col in model_data.columns if col.startswith("theta_")]
+        y_column = [col for col in model_data.columns if col.startswith("zeta_")][0]
+        observation_y_column = [
+            col for col in obs_data.columns if col.startswith("zeta_")
+        ][0]
+        plot_domain_index = int(external_validation.get("plot_domain_index", 0))
+        if plot_domain_index >= len(x_columns):
+            raise ValueError("plot_domain_index exceeds the number of domain coordinates")
+
+        domain_columns = external_validation.get("domain_columns")
+        if domain_columns is None:
+            domain_columns = [external_validation.get("x_column")]
+        if len(domain_columns) != len(x_columns):
+            raise ValueError(
+                "external_validation.domain_columns must contain one CSV column "
+                "per application-domain coordinate"
+            )
+        required_columns = [
+            external_validation.get("y_column"),
+            *domain_columns,
+            *external_validation.get("parameter_columns", {}).values(),
+        ]
+        missing_columns = [
+            column for column in required_columns
+            if not column or column not in external_data.columns
+        ]
+        if missing_columns:
+            raise ValueError(
+                f"External validation CSV is missing columns: {missing_columns}"
+            )
+
+        x_external_phys = external_data[domain_columns].to_numpy(dtype=float)
+        y_external_phys = (
+            external_data[external_validation["y_column"]].to_numpy(dtype=float)
+            * external_validation.get("y_scale", 1.0)
+        )
+        parameter_mapping = external_validation["parameter_columns"]
+        if len(parameter_mapping) != dtheta:
+            raise ValueError(
+                "external_validation.parameter_columns must contain one CSV "
+                "column per calibration parameter"
+            )
+        external_theta_phys = external_data[
+            list(parameter_mapping.values())
+        ].to_numpy(dtype=float)
+
+        x_stats = reverse_normalization["x"]
+        x_external_norm = np.column_stack([
+            (x_external_phys[:, j] - x_stats[x_columns[j]]["min"])
+            / (x_stats[x_columns[j]]["max"] - x_stats[x_columns[j]]["min"])
+            for j in range(len(x_columns))
+        ])
+        theta_stats = reverse_normalization["theta"]
+        theta_min = np.array([theta_stats[col]["min"] for col in theta_columns])
+        theta_max = np.array([theta_stats[col]["max"] for col in theta_columns])
+        theta_range = theta_max - theta_min
+        external_theta_norm = (external_theta_phys - theta_min) / theta_range
+
+        x_obs_phys_matrix = np.column_stack([
+            results_physical[f"x_obs_{col.replace('x_', '')}"].values
+            for col in x_columns
+        ])
+        x_plot_obs = x_obs_phys_matrix[:, plot_domain_index]
+        x_plot_external = x_external_phys[:, plot_domain_index]
+        sort_idx = np.argsort(x_plot_obs)
+
+        kappa_phys = np.column_stack([
+            results_physical[f"kappa_{k}_mean"].values
+            for k in range(dtheta)
+        ])
+        delta_phys = results_physical["delta_eta_mean"].values
+        delta_std_phys = results_physical["delta_eta_std"].values
+        external_correction_phys = np.column_stack([
+            np.interp(x_plot_external, x_plot_obs[sort_idx], kappa_phys[sort_idx, k])
+            for k in range(dtheta)
+        ])
+        external_delta_phys = np.interp(
+            x_plot_external, x_plot_obs[sort_idx], delta_phys[sort_idx]
+        )
+        external_delta_std_phys = np.interp(
+            x_plot_external, x_plot_obs[sort_idx], delta_std_phys[sort_idx]
+        )
+        if theta_init == "fixed":
+            calibration_base_phys = np.tile(
+                np.asarray(theta_fixed_phys_arr, dtype=float),
+                (len(x_plot_external), 1),
+            )
+        else:
+            calibration_base_phys = np.column_stack([
+                np.interp(
+                    x_plot_external,
+                    x_plot_obs[sort_idx],
+                    np.asarray(theta_fixed_phys_arr[k])[sort_idx],
+                )
+                for k in range(dtheta)
+            ])
+        posterior_parameters_phys = calibration_base_phys + external_correction_phys
+
+        external_predictions = []
+        for row in range(len(external_data)):
+            theta_input = external_theta_norm[row] + (
+                external_correction_phys[row] / theta_range
+            )
+            mean, _ = eta_predict(x_external_norm[row], theta_input, gp_eta)
+            external_predictions.append(mean * y_sd + y_mu + external_delta_phys[row])
+
+        plot_external_validation(
+            model_data[x_columns].to_numpy()[:, plot_domain_index],
+            model_data[y_column].to_numpy(),
+            x_obs_phys_matrix[:, plot_domain_index],
+            results_physical[
+                f"zeta_obs_{observation_y_column.replace('zeta_', '')}"
+            ].values,
+            x_plot_obs,
+            results_physical["y_post_mean"].values,
+            results_physical["y_post_std"].values,
+            x_plot_external,
+            y_external_phys,
+            external_predictions,
+            theta_labels,
+            external_theta_phys,
+            external_correction_phys,
+            figure_path,
+            observation_set_label=plot_settings.get("observation_data_label", "Observed"),
+            simulation_set_label=plot_settings.get("simulation_data_label", "Simulator"),
+            application_domain_label=_plot_label(
+                plot_settings, "application_domain_labels", plot_domain_index, "x"
+            ),
+            observation_label=plot_settings.get("observation_value_label", "y"),
+            filename=external_validation.get(
+                "figure_filename", "external_validation.png"
+            ),
+            prior_parameters=model_data[theta_columns].to_numpy(),
+            posterior_parameters=posterior_parameters_phys,
+            external_discrepancy=external_delta_phys,
+            external_discrepancy_std=external_delta_std_phys,
+        )
+
+        external_output = external_data.copy()
+        external_output["posterior_predictive"] = external_predictions
+        external_output["additive_discrepancy_mean"] = external_delta_phys
+        external_output["additive_discrepancy_std"] = external_delta_std_phys
+        for k, label in enumerate(theta_labels):
+            external_output[f"{label}_learned_correction"] = (
+                external_correction_phys[:, k]
+            )
+        os.makedirs(results_path, exist_ok=True)
+        external_output.to_csv(
+            os.path.join(results_path, "external_validation_predictions.csv"),
+            index=False,
+        )
+
     if results_options['output_normalized_results']:
         print(f'Saving normalized results to {results_path}...')
         np.savez(os.path.join(results_path, "results_normalized.npz"), **results_normalized)
@@ -872,28 +1344,28 @@ def main():
         # interpolate the kappa and delta fields to the holdout x values
         for k in range(dtheta):
 
-            interp = interp1d(
-                results_normalized["x_obs"],
-                kappa_mean[k],
-                kind="cubic",
-                fill_value="extrapolate"
+            kappa_holdout[k] = interpolate_domain_field(
+                x_obs, kappa_mean[k], x_holdout_norm
             )
 
-            kappa_holdout[k] = interp(x_holdout_norm)
-
-        delta_interp = interp1d(
-            results_normalized["x_obs"],
-            delta_eta_mean,
-            kind="cubic",
-            fill_value="extrapolate"
+        delta_holdout = interpolate_domain_field(
+            x_obs, delta_eta_mean, x_holdout_norm
         )
 
-        delta_holdout = delta_interp(x_holdout_norm)
+        if theta_fixed.ndim == 2:
+            theta_holdout_base = np.column_stack([
+                interpolate_domain_field(x_obs, theta_fixed[:, k], x_holdout_norm)
+                for k in range(dtheta)
+            ])
+        else:
+            theta_holdout_base = theta_fixed
 
         # compute the posterior predictive mean for the holdout points
         for i in range(len(x_holdout_norm)):
 
-            theta_star = get_theta_at_obs(theta_fixed, i) + kappa_holdout[:, i]
+            theta_star = (
+                theta_holdout_base[i] if theta_fixed.ndim == 2 else theta_holdout_base
+            ) + kappa_holdout[:, i]
 
             m_i, s2_i = eta_predict(
                 x_holdout_norm[i],
@@ -988,10 +1460,11 @@ def main():
         # reconduct the prior in real-space (reverse-normalize the emulator predictions) for visualization purposes
         x_col = [col for col in model_normalized.columns if col.startswith('x_')][0]
         x_label = x_col.replace('x_', '')
-        x_obs_phys = results_physical[f'x_obs_{x_label}'].values
-        x_min = reverse_normalization["x"][x_col]["min"]
-        x_max = reverse_normalization["x"][x_col]["max"]
-        x_obs_norm = (x_obs_phys - x_min) / (x_max - x_min)
+        x_obs_phys = np.column_stack([
+            results_physical[f"x_obs_{label}"].values
+            for label in app_labels
+        ])
+        x_obs_norm = x_obs.copy()
         # Z_obs=np.hstack([x_obs_norm.reshape(-1,1), 
                         #  np.tile(theta_fixed_arr, 
                         #          (x_obs_norm.shape[0], 1))])
@@ -1010,7 +1483,7 @@ def main():
             raise ValueError(f"Unknown theta initialization: {theta_init}")
 
         Z_obs = np.hstack([
-            x_obs_norm.reshape(-1,1),
+            x_obs_norm,
             theta_block
         ])
         y_prior_mean_norm = gp_eta.predict(Z_obs)
@@ -1019,7 +1492,7 @@ def main():
         y_prior_var_phys = y_prior_var_norm * (y_sd ** 2)
 
         plot_discrepancy_diagnostics(
-            results_physical[f'x_obs_{x_label}'].values,
+            x_obs_phys,
             results_physical[f'zeta_obs_{y_label}'].values,
             model_data[[col for col in model_data.columns if col.startswith('x')]],
             model_data[[col for col in model_data.columns if col.startswith('zeta')]],
@@ -1041,7 +1514,12 @@ def main():
             holdout_data=holdout_results_physical if cross_validation_settings.get("holdout_data", False) else None,
             figure_name="posterior_predictive_check_physical.png",
             figure_path=figure_path,
-            suptitle='Posterior Predictive Check (Physical Units)'
+            suptitle='Posterior Predictive Check (Physical Units)',
+            plot_settings=plot_settings,
+            theta_labels=theta_labels,
+            theta_prior_min=theta_prior_min_phys,
+            theta_prior_max=theta_prior_max_phys,
+            theta_fixed_plot=theta_fixed_phys_arr,
         )
 
 
@@ -1054,13 +1532,22 @@ def main():
         print("theta_fixed.shape:", np.shape(theta_fixed))
 
 
+        theta_block_norm = (
+            np.tile(theta_fixed, (len(x_obs), 1))
+            if theta_fixed.ndim == 1 else theta_fixed
+        )
+        y_prior_obs_norm = gp_eta.predict(np.hstack([x_obs, theta_block_norm]))
+        y_prior_obs_var_norm = np.diag(
+            gp_eta.predict(np.hstack([x_obs, theta_block_norm]), return_cov=True)[1]
+        )
+
         plot_discrepancy_diagnostics(
-            results_normalized['x_obs'].values,
+            x_obs,
             results_normalized['zeta_obs'].values,
             model_normalized[[col for col in model_normalized.columns if col.startswith('x')]],
             model_normalized[[col for col in model_normalized.columns if col.startswith('zeta')]],
-            y_prior_mean,
-            y_prior_var,
+            y_prior_obs_norm,
+            y_prior_obs_var_norm,
             results_normalized['delta_eta_mean'].values,
             results_normalized['delta_eta_std'].values,
             results_normalized['y_post_mean'].values,
@@ -1077,7 +1564,12 @@ def main():
             holdout_data=holdout_results_normalized if cross_validation_settings.get("holdout_data", False) else None,
             figure_path=figure_path,
             figure_name="posterior_predictive_check_normalized.png",
-            suptitle='Posterior Predictive Check (Normalized Space)'
+            suptitle='Posterior Predictive Check (Normalized Space)',
+            plot_settings=plot_settings,
+            theta_labels=theta_labels,
+            theta_prior_min=np.zeros(dtheta),
+            theta_prior_max=np.ones(dtheta),
+            theta_fixed_plot=theta_fixed,
         )
 
     if figure_options['variance_decomposition']:
@@ -1115,7 +1607,7 @@ def main():
         )
 
         plot_relative_contributions(
-            x=results_physical[f'x_obs_{x_label}'].values,
+            x=x_obs_phys,
             contrib=contrib,
             figure_path=figure_path,
             save_name="relative_contributions.png",
@@ -1210,7 +1702,7 @@ def main():
                     "functions"
                 ][k]
 
-                x_vals = x_obs_phys.flatten()
+                x_vals = x_obs_phys[:, 0]
 
                 if func == "sin":
                     theta_true_k = np.sin(x_vals)
@@ -1228,7 +1720,7 @@ def main():
                 m = known_theta_params["m"][k]
                 b = known_theta_params["b"][k]
 
-                x_vals = x_obs_phys.flatten()
+                x_vals = x_obs_phys[:, 0]
 
                 theta_true_k = m * x_vals + b
 
@@ -1320,7 +1812,7 @@ def main():
                 ][known_delta_form]
             )
 
-            x_val = x_obs_phys.flatten()
+            x_val = x_obs_phys[:, 0]
 
             if known_delta_form == "power_law":
 

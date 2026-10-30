@@ -3,6 +3,50 @@ import numpy as np
 from scipy.linalg import cholesky, cho_solve
 from scipy.stats import multivariate_normal, norm
 from scipy.stats import invgamma
+from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
+from scipy.spatial import QhullError
+
+
+def as_domain_matrix(x):
+    """Return application-domain inputs as a two-dimensional array.
+
+    A one-dimensional domain remains ``(n, 1)`` while a multivariate domain
+    is kept as ``(n, n_domain)``.  This prevents callers from accidentally
+    flattening independent domain coordinates into one long coordinate.
+    """
+    values = np.asarray(x, dtype=float)
+    if values.ndim == 1:
+        return values.reshape(-1, 1)
+    if values.ndim != 2:
+        raise ValueError("Application-domain inputs must be a 1D or 2D array.")
+    return values
+
+
+def interpolate_domain_field(x_source, values, x_target):
+    """Interpolate a field defined on a one- or multi-dimensional domain."""
+    source = as_domain_matrix(x_source)
+    target = as_domain_matrix(x_target)
+    values = np.asarray(values, dtype=float)
+    if len(source) != len(values):
+        raise ValueError("The source domain and field must have the same length.")
+    if source.shape[1] == 1:
+        order = np.argsort(source[:, 0])
+        return np.interp(
+            target[:, 0],
+            source[order, 0],
+            values[order],
+            left=values[order][0],
+            right=values[order][-1],
+        )
+    try:
+        interpolator = LinearNDInterpolator(source, values, fill_value=np.nan)
+        result = np.asarray(interpolator(target), dtype=float)
+    except QhullError:
+        result = np.full(len(target), np.nan)
+    missing = np.isnan(result)
+    if np.any(missing):
+        result[missing] = NearestNDInterpolator(source, values)(target[missing])
+    return result
 
 def rbf_kernel(X, Y, ell=1.0, var=1.0):
     X = np.atleast_2d(X)
