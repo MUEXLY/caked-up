@@ -1,5 +1,6 @@
 {
   "base_config": "config.json",
   "run_count": 3,
-  "output_path": "results/sequential"
+  "output_path": "results/sequential",
+  "kappa_prior_types": ["gp", "lasso", "fused_lasso", "spike_slab"]
 }

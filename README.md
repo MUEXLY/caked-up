@@ -347,17 +347,21 @@ python3 sensitivity_analysis/sensitivity_analysis.py
 Sequential runs carry each run's post-burn-in shrinkage hyperparameter
 posterior into the next run. This supports GP, lasso, fused lasso, and
 spike-slab priors for the kappa fields. Edit `sequential_config.json` to choose
-`run_count`, the base calibration config, and the output directory, then submit
-one SLURM job:
+`run_count`, the base calibration config, output directory, and
+`kappa_prior_types`, then submit the four-task SLURM array (keep its index range
+in `run_sequential.sbatch` aligned with that list):
 
 ```bash
 sbatch run_sequential.sbatch
 ```
 
-Each run is saved under its own numbered directory. The first run initializes
-each supported hyperparameter at the mean of its configured prior. Later runs
-fit the corresponding prior family to the previous run's posterior samples and
-start at the fitted distribution's mean.
+The GP, lasso, fused-lasso, and spike-slab chains run as separate parallel array
+tasks. Within each chain, runs remain sequential: each run is saved under its
+own numbered directory and passes its posterior to the next run. The first run
+initializes each supported hyperparameter at the mean of its configured prior;
+later runs fit the corresponding prior family to the previous run's posterior
+samples and start at the fitted distribution's mean. Results are grouped under
+`results/sequential/<prior>/`.
 
 ---
 
