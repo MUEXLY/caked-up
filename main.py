@@ -1,5 +1,6 @@
 import sys
 import os
+import copy
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -366,9 +367,15 @@ def main():
     # 1c. Instantiate shrinkage prior objects based on config
     # ============================================================
 
-    kappa_priors = [
-    create_prior( shrinkage_settings["kappa"])
-    for _ in range(dtheta)] # one prior object per theta dimension
+    kappa_prior_config = shrinkage_settings["kappa"]
+    kappa_priors = []
+    for k in range(dtheta):
+        dimension_config = copy.deepcopy(kappa_prior_config)
+        dimension_overrides = kappa_prior_config.get("by_dimension", [])
+        if k < len(dimension_overrides):
+            active_prior = dimension_config["shrinkage_prior"]
+            dimension_config[active_prior].update(dimension_overrides[k])
+        kappa_priors.append(create_prior(dimension_config))
 
     print(f"Instantiated kappa_priors of type {kappa_priors[0].name} with initial state: {kappa_priors[0].get_state()}")
     
@@ -626,12 +633,14 @@ def main():
                 {
                     "label": label,
                     "name": r"$\ell$",
+                    "parameter": "ell",
                     "kind": "lognormal",
                     "prior": prior.config["ell_prior"],
                 },
                 {
                     "label": label,
                     "name": r"$\mathrm{var}$",
+                    "parameter": "var",
                     "kind": "lognormal",
                     "prior": prior.config["var_prior"],
                 },
@@ -641,6 +650,7 @@ def main():
             density_specs.append({
                 "label": label,
                 "name": r"$\lambda$",
+                "parameter": "lambda",
                 "kind": "gamma",
                 "prior": prior.config["lambda_prior"],
             })
@@ -649,6 +659,7 @@ def main():
             density_specs.append({
                 "label": label,
                 "name": r"$\pi$",
+                "parameter": "pi",
                 "kind": "beta",
                 "prior": prior.config["pi_prior"],
             })
@@ -1018,6 +1029,65 @@ def main():
         
         np.savetxt(os.path.join(results_path, "parameter_traces.txt"), output_data, header="\t".join(headers), delimiter="\t")
         print(f"Saved parameter traces to {os.path.join(results_path, 'parameter_traces.txt')}")
+
+    # Fit supported shrinkage-hyperparameter posteriors for sequential runs.
+    posterior_start = min(max(int(burnin) + 1, 0), Nmcmc)
+    posterior_hyperparameters = {}
+    for spec, trace in zip(density_specs, density_traces):
+        samples = np.asarray(trace[posterior_start:], dtype=float)
+        samples = samples[np.isfinite(samples) & (samples > 0)]
+        if samples.size == 0 or spec["kind"] == "halfcauchy":
+            continue
+
+        parameter = spec["parameter"]
+        kind = spec["kind"]
+        if kind == "lognormal":
+            log_samples = np.log(samples)
+            log_mean = float(np.mean(log_samples))
+            log_std = float(np.std(log_samples, ddof=1)) if samples.size > 1 else 0.0
+            fitted = {"mu": log_mean, "sigma": max(log_std, 1e-8)}
+            mean = float(np.exp(log_mean + 0.5 * log_std**2))
+            family = "gp"
+        elif kind == "gamma":
+            sample_mean = float(np.mean(samples))
+            sample_var = float(np.var(samples, ddof=1)) if samples.size > 1 else 0.0
+            fallback = spec["prior"]
+            fitted = (
+                {"shape": sample_mean**2 / sample_var, "rate": sample_mean / sample_var}
+                if sample_var > 1e-12 else dict(fallback)
+            )
+            mean = fitted["shape"] / fitted["rate"]
+            family = "gamma"
+        elif kind == "beta":
+            bounded_samples = np.clip(samples, 1e-8, 1 - 1e-8)
+            sample_mean = float(np.mean(bounded_samples))
+            sample_var = float(np.var(bounded_samples, ddof=1)) if samples.size > 1 else 0.0
+            max_var = sample_mean * (1 - sample_mean)
+            sample_var = min(sample_var, max_var * (1 - 1e-8))
+            fallback = spec["prior"]
+            if sample_var > 1e-12:
+                concentration = max_var / sample_var - 1
+                fitted = {
+                    "alpha": sample_mean * concentration,
+                    "beta": (1 - sample_mean) * concentration,
+                }
+            else:
+                fitted = dict(fallback)
+            mean = fitted["alpha"] / (fitted["alpha"] + fitted["beta"])
+            family = "beta"
+        else:
+            continue
+
+        record = posterior_hyperparameters.setdefault(
+            spec["label"], {"kind": family, "parameters": {}, "means": {}}
+        )
+        record["parameters"][parameter] = fitted
+        record["means"][parameter] = mean
+
+    posterior_path = os.path.join(results_path, "hyperparameter_posterior.json")
+    with open(posterior_path, "w") as f:
+        json.dump(posterior_hyperparameters, f, indent=2)
+    print(f"Saved shrinkage hyperparameter posterior to {posterior_path}")
 
     # ============================================================
     # 7. Posterior Predictive Check
