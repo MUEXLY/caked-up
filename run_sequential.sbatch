@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=calib_sequential
-#SBATCH --output=logs/sequential_%A_%a.txt
+#SBATCH --output=logs/sequential_%A_%a.out
 #SBATCH --error=logs/sequential_%A_%a.err
 #SBATCH --array=0-3
 #SBATCH --time=06:00:00
-#SBATCH --cpus-per-task=1
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=16G
 
 # Create the logs directory before submitting this job.
