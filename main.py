@@ -834,7 +834,10 @@ def main():
                 density_state_index += 1
 
         if (
-            figure_options.get("hyperprior_density_animation", False)
+            figure_options.get(
+                "live_hyperparameter_updates",
+                figure_options.get("hyperprior_density_animation", False),
+            )
             and density_specs
             and ((it + 1) % live_density_stride == 0 or it + 1 == Nmcmc)
         ):
@@ -895,6 +898,8 @@ def main():
             theta_current = theta_base[live_indices] + kappa_theta.T[live_indices]
             live_inputs = np.hstack([x_obs[live_indices], theta_current])
             live_mean, live_std = gp_eta.predict(live_inputs, return_std=True)
+            live_mean = np.asarray(live_mean).reshape(len(live_indices), -1)[:, 0]
+            live_std = np.asarray(live_std).reshape(len(live_indices), -1)[:, 0]
             live_mean = live_mean + delta_eta[live_indices]
             live_uncertainty = np.sqrt(live_std**2 + sigma2)
             live_x = (
@@ -906,7 +911,7 @@ def main():
                 "iteration": int(it + 1),
                 "total_iterations": int(Nmcmc),
                 "x": live_x.tolist(),
-                "observed": y_obs[live_indices, 0].tolist(),
+                "observed": np.asarray(y_obs)[live_indices].reshape(len(live_indices), -1)[:, 0].tolist(),
                 "predicted": live_mean.tolist(),
                 "uncertainty": live_uncertainty.tolist(),
             }

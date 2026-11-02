@@ -309,15 +309,14 @@ python3 calibration_gui.py
 ```
 
 The GUI provides framework selection, typed config controls, live calibration
-output, and previews of figures and result artifacts. Boolean settings use
+output, and a scrollable gallery of all generated figures. Boolean settings use
 checkboxes; numeric and string settings use text fields. Select five headered
 tables for simulator domain, simulator parameters, simulator outputs,
 observation domain, and observations. CSV, TSV, whitespace text, and XLSX are
 accepted; the GUI detects separators and stages a consistent tab-delimited
-copy for either framework. It also streams a live normalized prediction view
-while MCMC runs and plays both the calibration prediction and
-hyperparameter-on-prior-density GIFs in separate run side panes. The analysis
-preview includes scrollbars for oversized figures and text artifacts. The IB
+copy for either framework. During MCMC it renders a live normalized prediction
+pane beside the terminal for either method. Analyze provides a selectable list
+of figures and result files with a single preview at a time. The IB
 predecessor is included under `frameworks/integrated_delta/` and
 uses the shared root requirements. The GUI writes run configs and outputs
 under the ignored `gui_runs/` directory and does not overwrite either source

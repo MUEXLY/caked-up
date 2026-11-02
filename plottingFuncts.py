@@ -715,6 +715,8 @@ def plot_hyperparameter_density_animation(
             return beta_distribution(
                 a=float(prior["alpha"]), b=float(prior["beta"])
             )
+        if kind == "halfcauchy":
+            return halfcauchy(scale=float(spec["prior"].get("scale", 1.0)))
         raise ValueError(f"Unsupported hyperparameter density kind: {kind}")
 
     distributions = [distribution(spec) for spec in hyperparameter_specs]
@@ -810,6 +812,8 @@ def plot_hyperparameter_density_state(
             dist = gamma_distribution(a=float(prior["shape"]), scale=1.0 / float(prior["rate"]))
         elif kind == "beta":
             dist = beta_distribution(a=float(prior["alpha"]), b=float(prior["beta"]))
+        elif kind == "halfcauchy":
+            dist = halfcauchy(scale=float(prior.get("scale", 1.0)))
         else:
             continue
         current = float(value)
