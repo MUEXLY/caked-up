@@ -13,6 +13,11 @@ from functs import *
 from shrinkage import *
 from plottingFuncts import *
 from plottingFuncts import _plot_label
+from frameworks.integrated_delta.physical_constraints import (
+    compile_directional_constraints,
+    initialize_hard_constraint_state,
+    monotonicity_log_penalty,
+)
 import json
 
 def main():
@@ -195,6 +200,23 @@ def main():
 
     theta_labels = [col.replace('theta_', '') for col in calib_params.columns]
     app_labels = [col.replace('x_', '') for col in model_domain.columns]
+    directional_constraints = compile_directional_constraints(
+        calibration_settings.get("physical_constraints"),
+        app_labels,
+        theta_labels,
+        [
+            col.replace("zeta_", "")
+            for col in model_data.columns
+            if col.startswith("zeta_")
+            and not col.endswith("_mean")
+            and not col.endswith("_std")
+        ],
+    )
+    if directional_constraints["enabled"]:
+        print(
+            f"Enabled {len(directional_constraints['rules'])} "
+            f"{directional_constraints['mode']} monotonic prediction constraint(s)."
+        )
 
     print(f'Normalizing input data (simulator_space)...')
 
@@ -554,6 +576,25 @@ def main():
     kappa_z = np.zeros((dtheta, No))  # shape (dtheta, No)
     # kappa_theta = np.zeros((dtheta, No))
     kappa_theta=W @ kappa_z  # shape (dtheta, No)``
+    if directional_constraints["enabled"] and directional_constraints["mode"] == "hard":
+        print("Searching for a feasible starting state for hard constraints...")
+        theta_base_obs = (
+            np.tile(theta_fixed, (No, 1))
+            if theta_fixed.ndim == 1
+            else theta_fixed
+        )
+        kappa_z = initialize_hard_constraint_state(
+            kappa_z,
+            lambda fields: theta_base_obs + (W @ fields).T,
+            gp_eta,
+            x_obs,
+            directional_constraints,
+        )
+        kappa_theta = W @ kappa_z
+        print(
+            "Initialized kappa fields at a feasible hard-constraint state; "
+            f"latent correction norm={np.linalg.norm(kappa_z):.4g}."
+        )
 
 
     # Initial hyperparameters for each \kappa (i.e. each theta dimension)
@@ -707,20 +748,72 @@ def main():
     for it in range(Nmcmc):
 
         # ---- update kappa fields ----
-        for k in range(dtheta):
-            kappa_z, acc = kappa_priors[k].sample_kappa_field(
-                k,
-                kappa_z,
-                delta_eta,
-                theta_fixed,
-                x_obs,
-                y_obs,
-                gp_eta,
-                sigma2,
-                mh_scale_kappa[k]
-            )
-            accept_kappa[k] += acc
-            accept_trace[k].append(acc)
+        if directional_constraints["enabled"]:
+            def joint_log_posterior(candidate):
+                physical_kappa = W @ candidate
+                likelihood = float(np.sum(log_likelihood_embedded(
+                    y_obs,
+                    x_obs,
+                    theta_fixed,
+                    physical_kappa,
+                    delta_eta,
+                    gp_eta,
+                    sigma2,
+                )))
+                prior_density = 0.0
+                for prior_index, prior in enumerate(kappa_priors):
+                    if prior.name in {"spike_slab", "horseshoe"}:
+                        prior_density += prior.log_prior(
+                            prior_index, candidate[prior_index], x_obs
+                        )
+                    else:
+                        prior_density += prior.log_prior(candidate[prior_index], x_obs)
+                theta_base = (
+                    np.tile(theta_fixed, (No, 1))
+                    if theta_fixed.ndim == 1
+                    else theta_fixed
+                )
+                theta_star = theta_base + physical_kappa.T
+                constraint_density = monotonicity_log_penalty(
+                    gp_eta, x_obs, theta_star, directional_constraints
+                )
+                return likelihood + prior_density + constraint_density
+
+            for k in range(dtheta):
+                proposed_kappa_z = kappa_z.copy()
+                proposed_kappa_z[k] = kappa_priors[k].propose_kappa_field(
+                    k, kappa_z[k], x_obs, mh_scale_kappa[k]
+                )
+                current_logpost = joint_log_posterior(kappa_z)
+                proposed_logpost = joint_log_posterior(proposed_kappa_z)
+                if not np.isfinite(current_logpost):
+                    accepted = np.isfinite(proposed_logpost)
+                elif not np.isfinite(proposed_logpost):
+                    accepted = False
+                else:
+                    accepted = (
+                        np.log(np.random.rand())
+                        < proposed_logpost - current_logpost
+                    )
+                if accepted:
+                    kappa_z = proposed_kappa_z
+                accept_kappa[k] += accepted
+                accept_trace[k].append(accepted)
+        else:
+            for k in range(dtheta):
+                kappa_z, acc = kappa_priors[k].sample_kappa_field(
+                    k,
+                    kappa_z,
+                    delta_eta,
+                    theta_fixed,
+                    x_obs,
+                    y_obs,
+                    gp_eta,
+                    sigma2,
+                    mh_scale_kappa[k]
+                )
+                accept_kappa[k] += acc
+                accept_trace[k].append(acc)
 
             # kappa_theta[k] -= np.mean(kappa_theta[k])
 

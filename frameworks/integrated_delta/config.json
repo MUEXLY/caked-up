@@ -5,7 +5,13 @@
         "mh_scale_delta_prior": 0.15,
         "theta_initialization":"fixed",
         "posterior_predictive_samples": 200,
-        "allow_singular_covariance": true
+        "allow_singular_covariance": true,
+        "physical_constraints": {
+            "enabled": false,
+            "mode": "soft",
+            "strength": 1.0,
+            "relationships": []
+        }
     },
     "input_settings":{
         "input_delimiter": "\t",

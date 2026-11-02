@@ -8,9 +8,14 @@ from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C
 
 
-from plottingFuncts import *
-from functs import *
-from functs import _prior_for_kappa
+try:  # package import from the combined application
+    from .plottingFuncts import *
+    from .functs import *
+    from .functs import _prior_for_kappa
+except ImportError:  # direct execution by the GUI or HPC scripts
+    from plottingFuncts import *
+    from functs import *
+    from functs import _prior_for_kappa
 
 
 def _math_label(label):
@@ -111,6 +116,10 @@ def main(config_path="config.json"):
     calib_params = model_data[[col for col in model_data.columns if col.startswith('theta_')]]
 
     configured_theta_labels = label_settings.get("theta_labels", {})
+    theta_parameter_names = [
+        column.replace("theta_", "")
+        for column in calib_params.columns
+    ]
     theta_labels = []
     for index, column in enumerate(calib_params.columns):
         parameter_name = column.replace("theta_", "")
@@ -128,6 +137,22 @@ def main(config_path="config.json"):
             parameter_name,
         )
         theta_labels.append(configured_label)
+
+    directional_constraints = compile_directional_constraints(
+        calibration_settings.get("physical_constraints"),
+        [column.replace("x_", "") for column in model_domain.columns],
+        theta_parameter_names,
+        [
+            column.replace("y_", "")
+            for column in model_data.columns
+            if column.startswith("y_")
+        ],
+    )
+    if directional_constraints["enabled"]:
+        print(
+            f"Enabled {len(directional_constraints['rules'])} "
+            f"{directional_constraints['mode']} monotonic prediction constraint(s)."
+        )
     configured_app_labels = label_settings.get("application_domain_labels", {})
     app_labels = []
     for index, column in enumerate(model_domain.columns):
@@ -339,6 +364,19 @@ def main(config_path="config.json"):
     # ============================================================
 
     delta = np.zeros((dtheta, No))
+    if directional_constraints["enabled"] and directional_constraints["mode"] == "hard":
+        print("Searching for a feasible starting state for hard constraints...")
+        delta = initialize_hard_constraint_state(
+            delta,
+            lambda fields: np.tile(theta_fixed, (No, 1)) + fields.T,
+            gp_eta,
+            x_obs,
+            directional_constraints,
+        )
+        print(
+            "Initialized discrepancy fields at a feasible hard-constraint "
+            f"state; correction norm={np.linalg.norm(delta):.4g}."
+        )
 
     # Initial hyperparameters for each δₖ
     ell_delta = 0.3 * np.ones(dtheta)
@@ -412,7 +450,8 @@ def main(config_path="config.json"):
                 y_obs,
                 gp_eta,
                 sigma2,
-                mh_scale_delta
+                mh_scale_delta,
+                constraints=directional_constraints,
             )
             accept_delta[k] += acc
             accept_trace[k].append(acc)
@@ -758,6 +797,17 @@ def main(config_path="config.json"):
             allow_singular_covariance=allow_singular_covariance,
             random_state=validation_options.get('random_seed', 0),
             kappa_hyperpriors=kappa_hyperpriors,
+            physical_constraints=calibration_settings.get("physical_constraints"),
+            domain_labels=[
+                column.replace("x_", "")
+                for column in model_domain.columns
+            ],
+            parameter_labels=theta_parameter_names,
+            observable_labels=[
+                column.replace("y_", "")
+                for column in model_data.columns
+                if column.startswith("y_")
+            ],
         )
         full_scale = np.ptp(y_obs_phys)
         full_scale = full_scale if full_scale > 0 else 1.0
@@ -829,6 +879,17 @@ def main(config_path="config.json"):
             mh_scale_delta=calibration_settings["mh_scale_delta_prior"],
             allow_singular_covariance=allow_singular_covariance,
             random_state=validation_options.get("random_seed", 0),
+            physical_constraints=calibration_settings.get("physical_constraints"),
+            domain_labels=[
+                column.replace("x_", "")
+                for column in model_domain.columns
+            ],
+            parameter_labels=theta_parameter_names,
+            observable_labels=[
+                column.replace("y_", "")
+                for column in model_data.columns
+                if column.startswith("y_")
+            ],
         )
         plot_kappa_hyperprior_sensitivity(
             hyperprior_metrics,

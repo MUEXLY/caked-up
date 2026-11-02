@@ -12,6 +12,10 @@ class ShrinkagePrior:
 
     def log_prior(self, z, x=None, k=None):
         raise NotImplementedError
+
+    def propose_kappa_field(self, k, field, x_obs, mh_scale):
+        """Draw the prior family's symmetric random-walk proposal for a field."""
+        return np.asarray(field) + mh_scale * np.random.randn(len(field))
     
     def sample_kappa_field(self, k, kappa_theta, delta_eta, theta, x_obs, y_obs, gp_eta, sigma2, mh_scale):
         raise NotImplementedError
@@ -91,6 +95,14 @@ class GPPrior(ShrinkagePrior):
             z @ alpha
             + logdet
             + n * np.log(2 * np.pi)
+        )
+
+    def propose_kappa_field(self, k, field, x_obs, mh_scale):
+        covariance = rbf_kernel(
+            x_obs, x_obs, ell=self.ell, var=self.var
+        ) + 1e-8 * np.eye(len(x_obs))
+        return np.asarray(field) + mh_scale * (
+            np.linalg.cholesky(covariance) @ np.random.randn(len(x_obs))
         )
 
     def sample_kappa_field(
@@ -274,6 +286,9 @@ class LassoPrior(ShrinkagePrior):
             n*np.log(self.lam/2)
             - self.lam*np.sum(np.abs(z))
         )
+
+    def propose_kappa_field(self, k, field, x_obs, mh_scale):
+        return np.asarray(field) + mh_scale * np.random.randn(len(x_obs))
     
     def sample_kappa_field(self,
         k,
@@ -397,6 +412,9 @@ class FusedLassoPrior(ShrinkagePrior):
             m*np.log(self.lam/2)
             - self.lam*penalty
         )
+
+    def propose_kappa_field(self, k, field, x_obs, mh_scale):
+        return np.asarray(field) + mh_scale * np.random.randn(len(x_obs))
 
     def sample_kappa_field(
         self,
@@ -604,6 +622,12 @@ class HorseshoePrior(ShrinkagePrior):
         return np.sum(
             -0.5*np.log(2*np.pi*sigma**2)
             -0.5*(z/sigma)**2
+        )
+
+    def propose_kappa_field(self, k, field, x_obs, mh_scale):
+        self.initialize(k, field)
+        return np.asarray(field) + (
+            mh_scale * np.sqrt(self.local_scale[k]) * np.random.randn(len(x_obs))
         )
     
     def update_local_scales(self, k, z):
@@ -831,6 +855,10 @@ class SpikeSlabPrior(ShrinkagePrior):
             -0.5*np.log(2*np.pi*sigma**2)
             -0.5*(z/sigma)**2
         )
+
+    def propose_kappa_field(self, k, field, x_obs, mh_scale):
+        self.initialize(k, field)
+        return np.asarray(field) + mh_scale * np.random.randn(len(x_obs))
     
     def update_indicators(self, k, z):
 

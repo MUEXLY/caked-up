@@ -29,6 +29,13 @@
 
         "mh_scale_kappa_prior": 0.5,
 
+        "physical_constraints": {
+            "enabled": false,
+            "mode": "soft",
+            "strength": 1.0,
+            "relationships": []
+        },
+
         "mh_scales":{
             "log_ell_kappa": 0.1,
             "log_var_kappa": 0.1

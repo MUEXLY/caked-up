@@ -133,6 +133,42 @@ It includes settings for:
 - Noise assumptions
 - Sampling controls
 - Embedded discrepancy configuration
+- Optional hard or soft monotonic prediction constraints
+
+Physical constraints are configured under
+`calibration_settings.physical_constraints`. The GUI has a dedicated workflow
+page where each row specifies a predictor and observable response. For
+example, to require predictions to decrease as an application-domain variable
+increases:
+
+```json
+"physical_constraints": {
+  "enabled": true,
+  "mode": "soft",
+  "strength": 1.0,
+  "relationships": [
+    {
+      "predictor_type": "appdomain",
+      "predictor": "x",
+      "response_type": "observable",
+      "response": "response",
+      "direction": "decreasing"
+    }
+  ]
+}
+```
+
+`predictor_type` may be `appdomain` or `inputparam`; `response_type` may be
+`appdomain`, `inputparam`, or `observable`. Names match the imported table
+headers. Thus rows can describe predictor-to-observable monotonicity, relations
+between input parameters, or app-domain-to-input-parameter trends. Hard mode
+rejects candidate calibrated states that violate a row. Soft mode adds a
+quadratic log-posterior penalty; larger positive `strength` applies a stronger
+penalty. Observable responses use local emulator derivatives at observation
+locations. Predictor-to-predictor relationships are checked across adjacent
+observation locations ordered by the selected predictor. The rules support GP,
+lasso, fused-lasso, spike-slab, and horseshoe kappa priors in IBFU, and GP
+discrepancy fields in IB.
 
 ## Input Settings
 
