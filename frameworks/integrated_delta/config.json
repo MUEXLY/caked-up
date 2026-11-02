@@ -1,0 +1,120 @@
+{
+    "calibration_settings":{
+        "N_mcmc": 20000,
+        "burn_in": 1000,
+        "mh_scale_delta_prior": 0.15,
+        "theta_initialization":"fixed",
+        "posterior_predictive_samples": 200,
+        "allow_singular_covariance": true
+    },
+    "input_settings":{
+        "input_delimiter": "\t",
+        "input_observations_path": "./md-ddd_edgeDipole/observationData/",
+        "input_model_path": "./md-ddd_edgeDipole/modelData/"
+    },
+    "label_settings":{
+        "custom_labels": true,
+        "theta_labels":{
+                "theta1": "\\ell^{c} [b]",
+                "theta2": "\\mu [Pa]",
+                "theta3": "\\nu [-]"
+
+        },
+        "kappa_labels":{
+                "kappa1": "\\delta_{\\theta1}",
+                "kappa2": "\\delta_{\\theta2}",
+                "kappa3": "\\delta_{\\theta3}"
+        },
+        "observation_labels":{
+                "obs1": "CRSS [MPa]"
+        },
+        "observation_set_label": "MD Observation",
+        "simulation_set_label": "DDD Simulation",
+        "application_domain_labels":{
+                "domain1": "\\mathrm{h}^d"
+        }
+
+    },
+    "cross_validation_settings":{
+        "conduct_cross_validation": false,
+        "known_theta_form": "custom",
+        "known_theta_form_params": {
+            "constant": {
+                "values": [1.5,1.75]
+            },
+            "trig_funct": {
+                "functions": ["sin", "cos"]
+            },
+            "custom":{
+                "functions": ["cust_1", "cust_2"]
+            }
+        }
+    },
+    "output_settings":{
+        "figures_path": "figures/",
+        "figure_options":{
+            "data_priors": true,
+            "radar_plot": true,
+            "radar_animation": true,
+            "posterior_predict_normalized": true,
+            "posterior_predict_physical": true,
+            "delta_posterior_normalized": true,
+            "delta_posterior_physical": true,
+            "prior_posterior_density": true,
+            "emulator_sensitivity_pca": true,
+            "emulator_sensitivity_pca_filename": "emulator_sensitivity_pca.png",
+            "emulator_sensitivity_boxplot": true,
+            "emulator_sensitivity_boxplot_filename": "emulator_sensitivity_boxplot.png",
+            "kappa_hyperprior_sensitivity": false,
+            "kappa_hyperprior_sensitivity_filename": "kappa_hyperprior_sensitivity.png",
+            "holdout_sensitivity": true,
+            "holdout_predictions": true,
+            "holdout_nrmse_sensitivity": true,
+            "acceptance_trajectory": true,
+            "step_size_plot": true
+        },
+        "results_options":{
+            "results_path": "results/",
+            "save_calibrated_parameters": true,
+            "save_model_csv": true,
+            "save_model_json": true
+        },
+        "validation_options": {
+            "kappa_hyperpriors": {
+                "kappa1": {
+                    "rho": {"log_mu": -1.0, "log_sigma": 1.0},
+                    "sigma": {"log_mu": -1.0, "log_sigma": 1.0}
+                },
+                "kappa2": {
+                    "rho": {"log_mu": -1.0, "log_sigma": 1.0},
+                    "sigma": {"log_mu": -1.0, "log_sigma": 1.0}
+                }
+            },
+            "kappa_hyperprior_factors": [0.5, 1.0, 2.0],
+            "kappa_hyperprior_repeats": 5,
+            "kappa_hyperprior_n_mcmc": 2000,
+            "kappa_hyperprior_burn_in": 500,
+            "kappa_hyperprior_sensitivity_filename": "kappa_hyperprior_sensitivity.png",
+            "holdout_fractions": [0.1, 0.2, 0.3],
+            "holdout_repeats": 20,
+            "holdout_n_mcmc": 2000,
+            "holdout_burn_in": 500,
+            "random_seed": 0,
+            "holdout_predictions_filename": "holdout_predictions.png",
+            "holdout_nrmse_filename": "holdout_nrmse_sensitivity.png",
+            "external_validation": {
+                "enabled": true,
+                "csv_path": "/Users/liammyhill/Library/CloudStorage/Box-Box/calibrationResults/crss_Calibration/edge/integratedDeltaValidation/outputs/crss_pa_results.csv",
+                "x_column": "measuredSeparation(b)",
+                "y_column": "crss_pa",
+                "y_scale": 1.0e-6,
+                "parameter_columns": {
+                    "coreSize": "coreSize",
+                    "mu": "mu_0",
+                    "nu": "nu"
+                },
+                "figure_filename": "external_validation.png"
+            }
+        }
+    }
+}
