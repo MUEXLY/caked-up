@@ -2,66 +2,44 @@
 
 import copy
 import json
-import math
 import os
 import subprocess
 import sys
 
 
-def _lognormal_mean(log_mean, log_std):
-    return math.exp(log_mean + 0.5 * log_std**2)
-
-
 def _set_prior_parameters(model, summary):
-    """Apply a fitted posterior distribution and initialize at its mean."""
+    """Replace a field's prior distribution with the fitted posterior fit."""
     kind = summary["kind"]
     if kind == "gp":
         prior_config = model["gp"]
         for parameter in ("ell", "var"):
             fitted = summary["parameters"][parameter]
             prior_config[f"{parameter}_prior"] = fitted
-            prior_config[f"{parameter}_init"] = _lognormal_mean(
-                fitted["mu"], fitted["sigma"]
-            )
     elif kind == "gamma":
-        prior_config = model["lasso"] if "lasso" in model else model["fused_lasso"]
+        prior_config = model[model["shrinkage_prior"]]
         fitted = summary["parameters"]["lambda"]
         prior_config["lambda_prior"] = fitted
-        prior_config["lambda_init"] = fitted["shape"] / fitted["rate"]
     elif kind == "beta":
         prior_config = model["spike_slab"]
         fitted = summary["parameters"]["pi"]
         prior_config["pi_prior"] = fitted
-        prior_config["pi_init"] = fitted["alpha"] / (fitted["alpha"] + fitted["beta"])
     else:
         raise ValueError(f"Unsupported sequential prior family: {kind}")
 
 
 def _apply_posterior(config, posterior):
-    shrinkage = config["calibration_settings"]["shrinkage_models"]
-    kappa_overrides = []
+    hyperpriors = config["hyperprior_settings"]
 
     for label, summary in posterior.items():
         if label == "delta_eta":
-            model = shrinkage["delta_eta"]
+            model = hyperpriors["delta_eta"]
             _set_prior_parameters(model, summary)
         elif label.startswith("kappa_"):
-            model = shrinkage["kappa"]
             index = int(label.removeprefix("kappa_"))
-            while len(kappa_overrides) <= index:
-                kappa_overrides.append({})
-            dimension_override = copy.deepcopy(model[model["shrinkage_prior"]])
-            dimension_model = {
-                "shrinkage_prior": model["shrinkage_prior"],
-                model["shrinkage_prior"]: dimension_override,
-            }
-            _set_prior_parameters(dimension_model, summary)
-            kappa_overrides[index] = dimension_model[model["shrinkage_prior"]]
+            model = hyperpriors["kappa_fields"][f"kappa{index + 1}"]
+            _set_prior_parameters(model, summary)
         else:
             raise ValueError(f"Unrecognized hyperparameter source: {label}")
-
-    if kappa_overrides:
-        shrinkage["kappa"]["by_dimension"] = kappa_overrides
 
 
 def main():
@@ -139,13 +117,13 @@ def main():
             raise RuntimeError("Sequential prior runs failed: " + ", ".join(failures))
         return
 
-    kappa_settings = base_config["calibration_settings"]["shrinkage_models"]["kappa"]
-    if selected_prior not in kappa_settings:
+    kappa_fields = base_config.get("hyperprior_settings", {}).get("kappa_fields", {})
+    if not kappa_fields or any(selected_prior not in field for field in kappa_fields.values()):
         raise ValueError(
-            f"Base config is missing kappa settings for prior {selected_prior!r}"
+            f"Base config is missing per-field kappa settings for prior {selected_prior!r}"
         )
-    kappa_settings["shrinkage_prior"] = selected_prior
-    kappa_settings.pop("by_dimension", None)
+    for field in kappa_fields.values():
+        field["shrinkage_prior"] = selected_prior
 
     # Generated run configs live in per-run folders, so resolve existing relative
     # inputs against the original config before writing those copies.
@@ -169,22 +147,6 @@ def main():
     os.makedirs(output_root, exist_ok=True)
 
     config = copy.deepcopy(base_config)
-    shrinkage = config["calibration_settings"]["shrinkage_models"]
-    for model in shrinkage.values():
-        prior_kind = model.get("shrinkage_prior")
-        if prior_kind == "gp":
-            gp = model["gp"]
-            for parameter in ("ell", "var"):
-                prior = gp[f"{parameter}_prior"]
-                gp[f"{parameter}_init"] = _lognormal_mean(prior["mu"], prior["sigma"])
-        elif prior_kind in {"lasso", "fused_lasso"}:
-            prior = model[prior_kind]
-            prior["lambda_init"] = prior["lambda_prior"]["shape"] / prior["lambda_prior"]["rate"]
-        elif prior_kind == "spike_slab":
-            prior = model[prior_kind]
-            beta_prior = prior["pi_prior"]
-            prior["pi_init"] = beta_prior["alpha"] / (beta_prior["alpha"] + beta_prior["beta"])
-
     posterior = None
     for run_index in range(1, run_count + 1):
         if posterior is not None:

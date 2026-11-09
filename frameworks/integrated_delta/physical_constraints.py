@@ -1,4 +1,4 @@
-"""State-level monotonicity constraints for the calibration emulator."""
+"""State-level monotonicity and endpoint constraints for the emulator."""
 
 import numpy as np
 from scipy.optimize import minimize
@@ -9,11 +9,16 @@ def compile_directional_constraints(
     domain_labels,
     parameter_labels,
     observable_labels,
+    parameter_transforms=None,
+    observable_transforms=None,
 ):
-    """Resolve configured predictor/response names to model column indices."""
+    """Resolve configured constraint labels and physical endpoint values."""
     config = config or {}
     if not config.get("enabled", False):
-        return {"enabled": False, "mode": "soft", "strength": 0.0, "rules": []}
+        return {
+            "enabled": False, "mode": "soft", "strength": 0.0,
+            "rules": [], "boundary_rules": [],
+        }
 
     mode = str(config.get("mode", "soft")).lower()
     if mode not in {"soft", "hard"}:
@@ -74,11 +79,143 @@ def compile_directional_constraints(
             "response_index": label_sets[response_type].index(response_name),
             "direction": direction,
         })
-    if config.get("enabled", False) and not rules:
+
+    parameter_transforms = parameter_transforms or {}
+    observable_transforms = observable_transforms or {}
+    boundary_rules = []
+    for number, rule in enumerate(config.get("boundary_conditions", []), start=1):
+        if not isinstance(rule, dict):
+            raise ValueError(f"Boundary constraint row {number} must be an object")
+        domain_name = str(rule.get("domain", ""))
+        if domain_name not in label_sets["appdomain"]:
+            raise ValueError(
+                f"Boundary constraint row {number} references unknown application "
+                f"domain {domain_name!r}; available: {label_sets['appdomain']}"
+            )
+        endpoint = str(rule.get("endpoint", "")).lower()
+        endpoint = {"min": "minimum", "max": "maximum"}.get(endpoint, endpoint)
+        if endpoint not in {"minimum", "maximum"}:
+            raise ValueError(
+                f"Boundary constraint row {number} endpoint must be 'minimum' or 'maximum'"
+            )
+        target_type = str(rule.get("target_type", "")).lower()
+        if target_type not in {"inputparam", "observable"}:
+            raise ValueError(
+                f"Boundary constraint row {number} target_type must be "
+                "'inputparam' or 'observable'"
+            )
+        target_name = str(rule.get("target", ""))
+        if target_name not in label_sets[target_type]:
+            raise ValueError(
+                f"Boundary constraint row {number} references unknown {target_type} "
+                f"target {target_name!r}; available: {label_sets[target_type]}"
+            )
+        try:
+            target_value = float(rule["value"])
+            tolerance = float(rule.get("tolerance", 0.01))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Boundary constraint row {number} needs numeric value and tolerance"
+            ) from exc
+        if not np.isfinite(target_value) or not np.isfinite(tolerance) or tolerance <= 0:
+            raise ValueError(
+                f"Boundary constraint row {number} value must be finite and "
+                "tolerance must be finite and greater than zero"
+            )
+        transform = (
+            parameter_transforms if target_type == "inputparam"
+            else observable_transforms
+        ).get(target_name)
+        if transform is None:
+            raise ValueError(
+                f"No normalization information is available for boundary target "
+                f"{target_name!r}"
+            )
+        offset, scale = float(transform["offset"]), float(transform["scale"])
+        if not np.isfinite(scale) or scale == 0:
+            raise ValueError(
+                f"Boundary target {target_name!r} has a zero or invalid normalization scale"
+            )
+        boundary_rules.append({
+            "domain_index": label_sets["appdomain"].index(domain_name),
+            "endpoint": endpoint,
+            "target_type": target_type,
+            "target_index": label_sets[target_type].index(target_name),
+            "target_name": target_name,
+            "target_value": (target_value - offset) / scale,
+            "tolerance": tolerance / abs(scale),
+        })
+    if config.get("enabled", False) and not rules and not boundary_rules:
         raise ValueError("Physical constraints are enabled but no rows are configured")
-    if mode == "soft" and rules and strength <= 0:
+    if mode == "soft" and (rules or boundary_rules) and strength <= 0:
         raise ValueError("Soft physical constraints require strength greater than zero")
-    return {"enabled": True, "mode": mode, "strength": strength, "rules": rules}
+    return {
+        "enabled": True, "mode": mode, "strength": strength,
+        "rules": rules, "boundary_rules": boundary_rules,
+    }
+
+
+def _predict_full(gp_eta, x, theta, delta_eta=None):
+    values = np.asarray(gp_eta.predict(np.hstack((x, theta))), dtype=float)
+    if values.ndim == 1:
+        values = values[:, None]
+    if delta_eta is not None:
+        values = values + np.asarray(delta_eta, dtype=float)[:, None]
+    return values
+
+
+def _interpolate_trajectory(x_obs, theta_star, delta_eta, domain_index):
+    """Interpolate the sampled calibrated state over one application domain."""
+    coordinate = x_obs[:, domain_index]
+    order = np.argsort(coordinate, kind="stable")
+    ordered_x = x_obs[order]
+    ordered_theta = theta_star[order]
+    ordered_delta = np.asarray(delta_eta, dtype=float)[order]
+    unique_x, inverse = np.unique(ordered_x[:, domain_index], return_inverse=True)
+    if len(unique_x) == len(ordered_x):
+        x_knots, theta_knots, delta_knots = ordered_x, ordered_theta, ordered_delta
+    else:
+        counts = np.bincount(inverse).astype(float)
+        x_knots = np.zeros((len(unique_x), x_obs.shape[1]))
+        theta_knots = np.zeros((len(unique_x), theta_star.shape[1]))
+        delta_knots = np.zeros(len(unique_x))
+        for column in range(x_obs.shape[1]):
+            x_knots[:, column] = np.bincount(
+                inverse, weights=ordered_x[:, column]
+            ) / counts
+        for column in range(theta_star.shape[1]):
+            theta_knots[:, column] = np.bincount(
+                inverse, weights=ordered_theta[:, column]
+            ) / counts
+        delta_knots = np.bincount(inverse, weights=ordered_delta) / counts
+
+    grid_size = max(len(unique_x), (len(unique_x) - 1) * 16 + 1)
+    grid_coordinate = np.linspace(unique_x[0], unique_x[-1], grid_size)
+    x_grid = np.column_stack([
+        np.interp(grid_coordinate, unique_x, x_knots[:, column])
+        for column in range(x_obs.shape[1])
+    ])
+    theta_grid = np.column_stack([
+        np.interp(grid_coordinate, unique_x, theta_knots[:, column])
+        for column in range(theta_star.shape[1])
+    ])
+    delta_grid = np.interp(grid_coordinate, unique_x, delta_knots)
+    return grid_coordinate, x_grid, theta_grid, delta_grid
+
+
+def _boundary_values(gp_eta, x_obs, theta_star, rule, delta_eta=None):
+    coordinate = x_obs[:, rule["domain_index"]]
+    extreme = np.min(coordinate) if rule["endpoint"] == "minimum" else np.max(coordinate)
+    selected = np.isclose(coordinate, extreme, rtol=0.0, atol=1e-10)
+    if rule["target_type"] == "inputparam":
+        return theta_star[selected, rule["target_index"]]
+    inputs = np.hstack((x_obs[selected], theta_star[selected]))
+    predictions = np.asarray(gp_eta.predict(inputs), dtype=float)
+    if predictions.ndim == 1:
+        predictions = predictions[:, None]
+    if delta_eta is not None:
+        predictions = predictions + np.asarray(delta_eta)[selected, None]
+    return predictions[:, rule["target_index"]]
 
 
 def monotonicity_log_penalty(
@@ -86,15 +223,18 @@ def monotonicity_log_penalty(
     x_obs,
     theta_star,
     constraints,
+    delta_eta=None,
     finite_difference_step=1e-4,
     hard_tolerance=1e-8,
 ):
-    """Score local monotonic relationships at the observation states.
+    """Score monotonic and endpoint constraints on the calibrated prediction.
 
+    For application-domain to observable rules, the sampled theta and
+    delta_eta fields are interpolated between observation locations and the
+    full prediction eta(x, theta(x)) + delta_eta(x) is checked on a dense grid.
     Inputs are the same normalized coordinates used by the fitted emulator.
-    Positive affine normalization preserves derivative direction. The soft
-    penalty is a log-prior contribution; hard mode returns ``-inf`` as soon as
-    a rule is violated.
+    The soft penalty is a log-prior contribution; hard mode returns ``-inf``
+    as soon as a rule is violated.
     """
     if not constraints or not constraints["enabled"]:
         return 0.0
@@ -104,6 +244,12 @@ def monotonicity_log_penalty(
         theta_star = np.broadcast_to(theta_star, (len(x_obs), len(theta_star)))
     if theta_star.shape != (len(x_obs), theta_star.shape[-1]):
         raise ValueError("theta_star must contain one calibrated parameter vector per observation")
+    if delta_eta is None:
+        delta_eta = np.zeros(len(x_obs), dtype=float)
+    else:
+        delta_eta = np.asarray(delta_eta, dtype=float)
+        if delta_eta.shape != (len(x_obs),):
+            raise ValueError("delta_eta must contain one value per observation")
 
     penalty = 0.0
     for rule in constraints["rules"]:
@@ -173,9 +319,21 @@ def monotonicity_log_penalty(
             raise ValueError(
                 f"Configured observable index {response} is unavailable from the emulator"
             )
-        derivative = (
-            plus_mean[:, response] - minus_mean[:, response]
-        ) / (2.0 * finite_difference_step)
+        if rule["predictor_type"] == "appdomain":
+            domain_index = rule["predictor_index"]
+            grid, x_grid, theta_grid, delta_grid = _interpolate_trajectory(
+                x_obs, theta_star, delta_eta, domain_index
+            )
+            full_mean = _predict_full(gp_eta, x_grid, theta_grid, delta_grid)
+            response_steps = np.diff(full_mean[:, response])
+            predictor_steps = np.diff(grid)
+            derivative = response_steps / predictor_steps
+        else:
+            # For a parameter-predictor rule, perturb that calibrated
+            # parameter while holding x and the other parameters fixed.
+            derivative = (
+                plus_mean[:, response] - minus_mean[:, response]
+            ) / (2.0 * finite_difference_step)
         signed_derivative = derivative if rule["direction"] == "increasing" else -derivative
         violations = np.maximum(-signed_derivative, 0.0)
         if constraints["mode"] == "hard":
@@ -183,10 +341,18 @@ def monotonicity_log_penalty(
                 return -np.inf
         else:
             penalty += constraints["strength"] * float(np.mean(violations**2))
+    for rule in constraints.get("boundary_rules", []):
+        values = _boundary_values(gp_eta, x_obs, theta_star, rule, delta_eta)
+        scaled_error = (values - rule["target_value"]) / rule["tolerance"]
+        if constraints["mode"] == "hard":
+            if np.any(np.abs(scaled_error) > 1.0):
+                return -np.inf
+        else:
+            penalty += constraints["strength"] * float(np.mean(scaled_error**2))
     return -penalty
 
 
-def monotonicity_margins(gp_eta, x_obs, theta_star, constraints):
+def monotonicity_margins(gp_eta, x_obs, theta_star, constraints, delta_eta=None):
     """Return per-rule derivative/slope margins; non-negative is feasible."""
     if not constraints or not constraints["enabled"]:
         return []
@@ -194,6 +360,10 @@ def monotonicity_margins(gp_eta, x_obs, theta_star, constraints):
     theta_star = np.asarray(theta_star, dtype=float)
     if theta_star.ndim == 1:
         theta_star = np.broadcast_to(theta_star, (len(x_obs), len(theta_star)))
+    if delta_eta is None:
+        delta_eta = np.zeros(len(x_obs), dtype=float)
+    else:
+        delta_eta = np.asarray(delta_eta, dtype=float)
     margins = []
     step = 1e-4
     for rule in constraints["rules"]:
@@ -242,10 +412,20 @@ def monotonicity_margins(gp_eta, x_obs, theta_star, constraints):
             plus_mean = plus_mean[:, None]
             minus_mean = minus_mean[:, None]
         response = rule["response_index"]
-        derivative = (plus_mean[:, response] - minus_mean[:, response]) / (2 * step)
+        if rule["predictor_type"] == "appdomain":
+            grid, x_grid, theta_grid, delta_grid = _interpolate_trajectory(
+                x_obs, theta_star, delta_eta, rule["predictor_index"]
+            )
+            full_mean = _predict_full(gp_eta, x_grid, theta_grid, delta_grid)
+            derivative = np.diff(full_mean[:, response]) / np.diff(grid)
+        else:
+            derivative = (plus_mean[:, response] - minus_mean[:, response]) / (2 * step)
         margins.append(
             derivative if rule["direction"] == "increasing" else -derivative
         )
+    for rule in constraints.get("boundary_rules", []):
+        values = _boundary_values(gp_eta, x_obs, theta_star, rule, delta_eta)
+        margins.append(rule["tolerance"] - np.abs(values - rule["target_value"]))
     return margins
 
 
@@ -255,6 +435,7 @@ def initialize_hard_constraint_state(
     gp_eta,
     x_obs,
     constraints,
+    delta_eta=None,
     *,
     random_seed=1729,
     n_starts=5,
@@ -277,6 +458,7 @@ def initialize_hard_constraint_state(
             x_obs,
             theta_star_from_fields(candidate),
             constraints,
+            delta_eta,
         )
         return np.isfinite(score)
 
@@ -295,6 +477,7 @@ def initialize_hard_constraint_state(
             x_obs,
             theta_star_from_fields(candidate),
             soft_constraints,
+            delta_eta,
         )
         violation = -float(score)
         return 1e4 * violation + 1e-6 * float(np.sum(candidate**2))
@@ -315,6 +498,7 @@ def initialize_hard_constraint_state(
             x_obs,
             theta_star_from_fields(candidate),
             constraints,
+            delta_eta,
         ))
 
     constrained_result = minimize(

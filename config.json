@@ -27,106 +27,12 @@
 
         "target_accept": 0.35,
 
-        "mh_scale_kappa_prior": 0.5,
-
         "physical_constraints": {
             "enabled": false,
             "mode": "soft",
             "strength": 1.0,
-            "relationships": []
-        },
-
-        "mh_scales":{
-            "log_ell_kappa": 0.1,
-            "log_var_kappa": 0.1
-        },
-
-       "shrinkage_models": {
-
-            "delta_eta": {
-
-                "shrinkage_prior": "gp",
-
-                "gp": {
-                    "ell_init": 0.01,
-                    "var_init": 0.3,
-
-                    "ell_prior": {
-                        "mu": 0.1,
-                        "sigma": 0.05
-                    },
-
-                    "var_prior": {
-                        "mu": 0.05,
-                        "sigma": 0.05
-                    }
-                }
-            },
-
-            "kappa": {
-
-                "shrinkage_prior": "lasso",
-                "groups": false,
-
-                "gp": {
-                    "ell_init": 0.01,
-                    "var_init": 0.001,
-
-                    "ell_prior": {
-                        "mu": 0.1,
-                        "sigma": 0.005
-                    },
-
-                    "var_prior": {
-                        "mu": 0.005,
-                        "sigma": 0.5
-                    }
-                },
-                "lasso": {
-                    "lambda_init": 0.1,
-                    "lambda_prior": {
-                        "shape": 2.0,
-                        "rate": 1.0
-                    }
-                },
-                "fused_lasso": {
-                    "lambda_init": 0.1,
-                    "lambda_prior": {
-                        "shape": 2.0,
-                        "rate": 1.0
-                    }
-                },
-                "horseshoe": {
-                    "tau_init": 0.1,
-                    "tau_prior": {
-                        "mu": 0.3,
-                        "sigma": 0.5
-                    }
-                },
-                "spike_slab": {
-                    "pi_init": 0.5,
-                    "pi_prior": {
-                        "alpha": 0.5,
-                        "beta": 0.5
-                    },
-                    "sigma_spike": 0.3,
-                    "sigma_slab": 1.0
-                    
-                },
-
-                "kappa_groups": [
-
-                    {
-                        "indices": [0,1],
-                        "method": "gp"
-                    },
-
-                    {
-                        "indices": [2],
-                        "method": "spike_slab"
-                    }
-                    ]
-            }
+            "relationships": [],
+            "boundary_conditions": []
         },
 
         "orthogonalization_settings":{
@@ -141,6 +47,48 @@
         "sigma2_prior_vals": {
             "a": 2.0,
             "b": 0.01
+        }
+    },
+    "hyperprior_settings": {
+        "delta_eta": {
+            "shrinkage_prior": "gp",
+            "gp": {
+                "ell_prior": {"mu": 0.1, "sigma": 0.05},
+                "var_prior": {"mu": 0.05, "sigma": 0.05},
+                "hyperparameter_step_sizes": {
+                    "log_ell_kappa": 0.1,
+                    "log_var_kappa": 0.1
+                }
+            }
+        },
+        "kappa_fields": {
+            "kappa1": {
+                "shrinkage_prior": "lasso",
+                "step_size": 0.5,
+                "gp": {"ell_prior": {"mu": 0.1, "sigma": 0.005}, "var_prior": {"mu": 0.005, "sigma": 0.5}, "hyperparameter_step_sizes": {"log_ell_kappa": 0.1, "log_var_kappa": 0.1}},
+                "lasso": {"lambda_prior": {"shape": 2.0, "rate": 1.0}},
+                "fused_lasso": {"lambda_prior": {"shape": 2.0, "rate": 1.0}},
+                "spike_slab": {"pi_prior": {"alpha": 0.5, "beta": 0.5}, "sigma_spike": 0.3, "sigma_slab": 1.0},
+                "horseshoe": {"tau_prior": {"mu": 0.3, "sigma": 0.5}}
+            },
+            "kappa2": {
+                "shrinkage_prior": "lasso",
+                "step_size": 0.5,
+                "gp": {"ell_prior": {"mu": 0.1, "sigma": 0.005}, "var_prior": {"mu": 0.005, "sigma": 0.5}, "hyperparameter_step_sizes": {"log_ell_kappa": 0.1, "log_var_kappa": 0.1}},
+                "lasso": {"lambda_prior": {"shape": 2.0, "rate": 1.0}},
+                "fused_lasso": {"lambda_prior": {"shape": 2.0, "rate": 1.0}},
+                "spike_slab": {"pi_prior": {"alpha": 0.5, "beta": 0.5}, "sigma_spike": 0.3, "sigma_slab": 1.0},
+                "horseshoe": {"tau_prior": {"mu": 0.3, "sigma": 0.5}}
+            },
+            "kappa3": {
+                "shrinkage_prior": "lasso",
+                "step_size": 0.5,
+                "gp": {"ell_prior": {"mu": 0.1, "sigma": 0.005}, "var_prior": {"mu": 0.005, "sigma": 0.5}, "hyperparameter_step_sizes": {"log_ell_kappa": 0.1, "log_var_kappa": 0.1}},
+                "lasso": {"lambda_prior": {"shape": 2.0, "rate": 1.0}},
+                "fused_lasso": {"lambda_prior": {"shape": 2.0, "rate": 1.0}},
+                "spike_slab": {"pi_prior": {"alpha": 0.5, "beta": 0.5}, "sigma_spike": 0.3, "sigma_slab": 1.0},
+                "horseshoe": {"tau_prior": {"mu": 0.3, "sigma": 0.5}}
+            }
         }
     },
     "input_settings":{
