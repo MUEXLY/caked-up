@@ -251,6 +251,7 @@ def main():
         constraint_count = (
             len(directional_constraints["rules"])
             + len(directional_constraints["boundary_rules"])
+            + len(directional_constraints["parameter_sign_rules"])
         )
         print(
             f"Enabled {constraint_count} {directional_constraints['mode']} "

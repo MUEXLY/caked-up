@@ -32,7 +32,8 @@
             "mode": "soft",
             "strength": 1.0,
             "relationships": [],
-            "boundary_conditions": []
+            "boundary_conditions": [],
+            "parameter_sign_constraints": []
         },
 
         "orthogonalization_settings":{

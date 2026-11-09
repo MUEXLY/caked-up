@@ -366,6 +366,7 @@ class CalibrationGUI(tk.Tk):
         self.constraint_editor_state: dict[str, dict] = {}
         self.constraint_rows: list[dict[str, tk.Variable]] = []
         self.boundary_constraint_rows: list[dict[str, tk.Variable]] = []
+        self.parameter_sign_rows: list[dict[str, tk.Variable]] = []
         self.page = "import"
         self.current_results_dir: Path | None = None
         self.process: subprocess.Popen | None = None
@@ -555,11 +556,12 @@ class CalibrationGUI(tk.Tk):
                 return True
             saved = self.config.get("calibration_settings", {}).get(
                 "physical_constraints",
-                {"enabled": False, "mode": "soft", "strength": 1.0, "relationships": [], "boundary_conditions": []},
+                {"enabled": False, "mode": "soft", "strength": 1.0, "relationships": [], "boundary_conditions": [], "parameter_sign_constraints": []},
             )
             saved = dict(saved)
             saved.setdefault("relationships", [])
             saved.setdefault("boundary_conditions", [])
+            saved.setdefault("parameter_sign_constraints", [])
             return current != saved
         if self.page != "settings" or not hasattr(self, "settings_values"):
             return False
@@ -1176,19 +1178,33 @@ class CalibrationGUI(tk.Tk):
                 "value": target_value,
                 "tolerance": tolerance,
             })
+        parameter_sign_constraints = []
+        sign_by_parameter = {}
+        for row in getattr(self, "parameter_sign_rows", []):
+            parameter = row["parameter"].get()
+            if parameter not in row["parameter_values"]:
+                raise ValueError("Choose an input parameter for each sign constraint.")
+            sign = row["sign"].get()
+            if sign not in {"positive", "negative"}:
+                raise ValueError("Choose whether each input parameter must be positive or negative.")
+            if parameter in sign_by_parameter:
+                raise ValueError(f"Input parameter {parameter!r} has more than one sign constraint.")
+            sign_by_parameter[parameter] = sign
+            parameter_sign_constraints.append({"parameter": parameter, "sign": sign})
         return {
             "enabled": bool(self.constraint_enabled_var.get()),
             "mode": self.constraint_mode_var.get(),
             "strength": strength,
             "relationships": rows,
             "boundary_conditions": boundary_conditions,
+            "parameter_sign_constraints": parameter_sign_constraints,
         }
 
     def _render_constraints(self) -> None:
         page_content = self._make_scrollable_content(self.content)
         self._heading(
             "Physical constraints",
-            "Define monotonic relationships and known endpoint values. Hard rules reject states outside the configured tolerance; soft rules add a posterior penalty.",
+            "Define monotonic relationships, endpoint values, and input-parameter sign requirements. Hard rules reject violations; soft rules add a posterior penalty.",
             parent=page_content,
         )
         config = self.config.setdefault("calibration_settings", {}).get(
@@ -1207,6 +1223,7 @@ class CalibrationGUI(tk.Tk):
         )
         self.constraint_rows = []
         self.boundary_constraint_rows = []
+        self.parameter_sign_rows = []
 
         controls = self._card(page_content)
         tk.Checkbutton(
@@ -1559,12 +1576,105 @@ class CalibrationGUI(tk.Tk):
             tooltip=None if boundary_domain_values and boundary_target_map else "Load and validate data first.",
         ).pack(anchor="w", pady=(8, 0))
 
+        sign_card = self._card(page_content)
+        tk.Label(
+            sign_card,
+            text="Input parameter sign across the application domain",
+            bg=COLORS["panel"],
+            fg=COLORS["text"],
+            font=("Avenir Next", 11, "bold"),
+            anchor="w",
+        ).pack(fill="x", pady=(0, 4))
+        tk.Label(
+            sign_card,
+            text=(
+                "Require the calibrated value θ* of a parameter to stay positive "
+                "or negative over the full application-domain trajectory."
+            ),
+            bg=COLORS["panel"],
+            fg=COLORS["muted"],
+            wraplength=900,
+            justify="left",
+            anchor="w",
+        ).pack(fill="x", pady=(0, 8))
+        sign_parameters = list(available.get("inputparam", []))
+        sign_rows_frame = tk.Frame(sign_card, bg=COLORS["panel"])
+        sign_rows_frame.pack(fill="x")
+
+        def add_parameter_sign_row(initial=None):
+            initial = initial or {}
+            row_frame = tk.Frame(
+                sign_rows_frame, bg=COLORS["panel_alt"], padx=8, pady=7
+            )
+            row_frame.pack(fill="x", pady=3)
+            tk.Label(
+                row_frame,
+                text="θ* for",
+                bg=COLORS["panel_alt"],
+                fg=COLORS["text"],
+            ).pack(side="left", padx=(0, 6))
+            parameter_var = tk.StringVar(value=initial.get("parameter", ""))
+            if not parameter_var.get() and sign_parameters:
+                parameter_var.set(sign_parameters[0])
+            parameter_box = ttk.Combobox(
+                row_frame,
+                textvariable=parameter_var,
+                values=sign_parameters,
+                state="readonly" if sign_parameters else "disabled",
+                style="Dark.TCombobox",
+                width=24,
+            )
+            parameter_box.pack(side="left", padx=(0, 8))
+            tk.Label(
+                row_frame,
+                text="stays",
+                bg=COLORS["panel_alt"],
+                fg=COLORS["text"],
+            ).pack(side="left", padx=(0, 6))
+            sign_var = tk.StringVar(value=initial.get("sign", "positive"))
+            sign_box = ttk.Combobox(
+                row_frame,
+                textvariable=sign_var,
+                values=("positive", "negative"),
+                state="readonly",
+                style="Dark.TCombobox",
+                width=12,
+            )
+            sign_box.pack(side="left", padx=(0, 8))
+            row_vars = {
+                "parameter": parameter_var,
+                "parameter_values": sign_parameters,
+                "sign": sign_var,
+                "frame": row_frame,
+            }
+            self.parameter_sign_rows.append(row_vars)
+
+            def remove_sign_row():
+                row_frame.destroy()
+                self.parameter_sign_rows.remove(row_vars)
+
+            _make_button(row_frame, "Remove", remove_sign_row).pack(side="left")
+
+        for saved_sign in config.get("parameter_sign_constraints", []):
+            if isinstance(saved_sign, dict):
+                if saved_sign.get("parameter") and saved_sign["parameter"] not in sign_parameters:
+                    sign_parameters.append(saved_sign["parameter"])
+                add_parameter_sign_row(saved_sign)
+        _make_button(
+            sign_card,
+            "Add parameter sign constraint",
+            lambda: add_parameter_sign_row() if sign_parameters else None,
+            state="normal" if sign_parameters else "disabled",
+            tooltip=None if sign_parameters else "Load and validate data first.",
+        ).pack(anchor="w", pady=(8, 0))
+
         tk.Label(
             page_content,
             text=(
-                "Monotonic rows constrain local slopes at observation locations. Endpoint rows "
-                "constrain values at application-domain extrema. Hard mode rejects states outside "
-                "the stated endpoint tolerance; soft mode adds a quadratic penalty."
+                "Observable monotonic rows constrain the full calibrated prediction along the "
+                "application domain. Endpoint rows constrain values at domain extrema, and sign "
+                "rows keep θ* positive or negative throughout the domain. Hard mode rejects "
+                "violating states; soft mode adds a quadratic penalty."
             ),
             bg=COLORS["window"],
             fg=COLORS["muted"],
@@ -1579,6 +1689,7 @@ class CalibrationGUI(tk.Tk):
                 if constraint_value["enabled"] and not (
                     constraint_value["relationships"]
                     or constraint_value["boundary_conditions"]
+                    or constraint_value["parameter_sign_constraints"]
                 ):
                     raise ValueError("Add at least one row or turn off physical constraints.")
                 if constraint_value["mode"] == "soft" and constraint_value["strength"] <= 0:

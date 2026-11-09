@@ -17,7 +17,7 @@ def compile_directional_constraints(
     if not config.get("enabled", False):
         return {
             "enabled": False, "mode": "soft", "strength": 0.0,
-            "rules": [], "boundary_rules": [],
+            "rules": [], "boundary_rules": [], "parameter_sign_rules": [],
         }
 
     mode = str(config.get("mode", "soft")).lower()
@@ -82,6 +82,47 @@ def compile_directional_constraints(
 
     parameter_transforms = parameter_transforms or {}
     observable_transforms = observable_transforms or {}
+    parameter_sign_rules = []
+    seen_sign_parameters = set()
+    for number, rule in enumerate(config.get("parameter_sign_constraints", []), start=1):
+        if not isinstance(rule, dict):
+            raise ValueError(f"Parameter sign constraint row {number} must be an object")
+        parameter_name = str(rule.get("parameter", ""))
+        if parameter_name not in label_sets["inputparam"]:
+            raise ValueError(
+                f"Parameter sign constraint row {number} references unknown input "
+                f"parameter {parameter_name!r}; available: {label_sets['inputparam']}"
+            )
+        if parameter_name in seen_sign_parameters:
+            raise ValueError(
+                f"Input parameter {parameter_name!r} has more than one sign constraint"
+            )
+        seen_sign_parameters.add(parameter_name)
+        sign = str(rule.get("sign", "")).lower()
+        if sign not in {"positive", "negative"}:
+            raise ValueError(
+                f"Parameter sign constraint row {number} sign must be "
+                "'positive' or 'negative'"
+            )
+        transform = parameter_transforms.get(parameter_name)
+        if transform is None:
+            raise ValueError(
+                f"No normalization information is available for parameter "
+                f"sign constraint {parameter_name!r}"
+            )
+        offset, scale = float(transform["offset"]), float(transform["scale"])
+        if not np.isfinite(offset) or not np.isfinite(scale) or scale == 0:
+            raise ValueError(
+                f"Parameter {parameter_name!r} has invalid normalization information"
+            )
+        parameter_sign_rules.append({
+            "parameter_index": label_sets["inputparam"].index(parameter_name),
+            "parameter_name": parameter_name,
+            "sign": sign,
+            "offset": offset,
+            "scale": scale,
+        })
+
     boundary_rules = []
     for number, rule in enumerate(config.get("boundary_conditions", []), start=1):
         if not isinstance(rule, dict):
@@ -145,13 +186,14 @@ def compile_directional_constraints(
             "target_value": (target_value - offset) / scale,
             "tolerance": tolerance / abs(scale),
         })
-    if config.get("enabled", False) and not rules and not boundary_rules:
+    if config.get("enabled", False) and not rules and not boundary_rules and not parameter_sign_rules:
         raise ValueError("Physical constraints are enabled but no rows are configured")
     if mode == "soft" and (rules or boundary_rules) and strength <= 0:
         raise ValueError("Soft physical constraints require strength greater than zero")
     return {
         "enabled": True, "mode": mode, "strength": strength,
         "rules": rules, "boundary_rules": boundary_rules,
+        "parameter_sign_rules": parameter_sign_rules,
     }
 
 
@@ -349,6 +391,23 @@ def monotonicity_log_penalty(
                 return -np.inf
         else:
             penalty += constraints["strength"] * float(np.mean(scaled_error**2))
+    for rule in constraints.get("parameter_sign_rules", []):
+        physical_values = (
+            theta_star[:, rule["parameter_index"]] * rule["scale"]
+            + rule["offset"]
+        )
+        signed_values = (
+            physical_values if rule["sign"] == "positive" else -physical_values
+        )
+        violations = np.maximum(-signed_values, 0.0)
+        if constraints["mode"] == "hard":
+            if np.any(violations > hard_tolerance * abs(rule["scale"])):
+                return -np.inf
+        else:
+            normalized_violations = violations / max(abs(rule["scale"]), 1e-12)
+            penalty += constraints["strength"] * float(
+                np.mean(normalized_violations**2)
+            )
     return -penalty
 
 
@@ -426,6 +485,15 @@ def monotonicity_margins(gp_eta, x_obs, theta_star, constraints, delta_eta=None)
     for rule in constraints.get("boundary_rules", []):
         values = _boundary_values(gp_eta, x_obs, theta_star, rule, delta_eta)
         margins.append(rule["tolerance"] - np.abs(values - rule["target_value"]))
+    for rule in constraints.get("parameter_sign_rules", []):
+        physical_values = (
+            theta_star[:, rule["parameter_index"]] * rule["scale"]
+            + rule["offset"]
+        )
+        signed_values = (
+            physical_values if rule["sign"] == "positive" else -physical_values
+        )
+        margins.append(signed_values)
     return margins
 
 
