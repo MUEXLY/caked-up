@@ -1,9 +1,23 @@
 import numpy as np
+import copy
 from scipy.linalg import cholesky, cho_solve
 from scipy.stats import multivariate_normal, norm
 from scipy.stats import invgamma
 import json
 import pandas as pd
+
+try:  # package import from the combined application
+    from .physical_constraints import (
+        compile_directional_constraints,
+        initialize_hard_constraint_state,
+        monotonicity_log_penalty,
+    )
+except ImportError:  # direct execution from frameworks/integrated_delta
+    from physical_constraints import (
+        compile_directional_constraints,
+        initialize_hard_constraint_state,
+        monotonicity_log_penalty,
+    )
 
 
 def build_kappa_hyperpriors(configured_priors, dtheta):
@@ -17,6 +31,8 @@ def build_kappa_hyperpriors(configured_priors, dtheta):
         {
             "rho": {"log_mu": -1.0, "log_sigma": 1.0},
             "sigma": {"log_mu": -1.0, "log_sigma": 1.0},
+            "step_size": 0.15,
+            "hyperparameter_step_sizes": {"log_rho": 0.1, "log_sigma": 0.1},
         }
         for _ in range(dtheta)
     ]
@@ -47,15 +63,45 @@ def build_kappa_hyperpriors(configured_priors, dtheta):
             }
             if prior[name]["log_sigma"] <= 0:
                 raise ValueError(f"kappa {index + 1} {name} log_sigma must be positive")
-        result.append(prior)
+        field_step_size = float(configured.get("step_size", 0.15))
+        if field_step_size <= 0:
+            raise ValueError(f"kappa {index + 1} step_size must be positive")
+        proposal_scales = configured.get("hyperparameter_step_sizes", {})
+        rho_step = float(proposal_scales.get("log_rho", 0.1))
+        sigma_step = float(proposal_scales.get("log_sigma", 0.1))
+        if rho_step <= 0 or sigma_step <= 0:
+            raise ValueError(
+                f"kappa {index + 1} hyperparameter step sizes must be positive"
+            )
+        result.append({
+            **prior,
+            "step_size": field_step_size,
+            "hyperparameter_step_sizes": {
+                "log_rho": rho_step,
+                "log_sigma": sigma_step,
+            },
+        })
     return result
+
+
+def hyperprior_mean(prior):
+    """Return the arithmetic mean of a log-normal hyperprior."""
+    return float(np.exp(prior["log_mu"] + 0.5 * prior["log_sigma"] ** 2))
+
+
+def hyperprior_square_mean(prior):
+    """Return E[X²] when X has the configured log-normal hyperprior."""
+    return float(np.exp(2.0 * prior["log_mu"] + 2.0 * prior["log_sigma"] ** 2))
 
 
 def _prior_for_kappa(kappa_hyperpriors, index):
     prior = kappa_hyperpriors[index]
     return (
         {"mu": prior["rho"]["log_mu"], "sigma": prior["rho"]["log_sigma"]},
-        {"mu": 2.0 * prior["sigma"]["log_mu"], "sigma": prior["sigma"]["log_sigma"]},
+        {
+            "mu": 2.0 * prior["sigma"]["log_mu"],
+            "sigma": 2.0 * prior["sigma"]["log_sigma"],
+        },
     )
 
 
@@ -182,20 +228,68 @@ def run_delta_sampler(
     allow_singular_covariance=False,
     kappa_hyperpriors=None,
     random_seed=None,
+    physical_constraints=None,
+    domain_labels=None,
+    parameter_labels=None,
+    observable_labels=None,
+    parameter_transforms=None,
+    observable_transforms=None,
 ):
     """Run the discrepancy sampler for one calibration training subset."""
     x_obs = np.asarray(x_obs, dtype=float)
     y_obs = np.asarray(y_obs, dtype=float).ravel()
     delta = np.zeros((dtheta, len(x_obs)))
-    ell_delta = 0.3 * np.ones(dtheta)
-    var_delta = 0.05 * np.ones(dtheta)
+    has_configured_field_priors = kappa_hyperpriors is not None
+    kappa_hyperpriors = build_kappa_hyperpriors(kappa_hyperpriors, dtheta)
+    ell_delta = np.array([
+        hyperprior_mean(prior["rho"]) for prior in kappa_hyperpriors
+    ])
+    var_delta = np.array([
+        hyperprior_square_mean(prior["sigma"]) for prior in kappa_hyperpriors
+    ])
     sigma2 = 0.02**2
     delta_chain = np.zeros((n_mcmc, dtheta, len(x_obs)))
 
     if random_seed is not None:
         np.random.seed(random_seed)
-    kappa_hyperpriors = build_kappa_hyperpriors(kappa_hyperpriors, dtheta)
-    mh_scales = {"log_ell_delta": 0.1, "log_var_delta": 0.1}
+    directional_constraints = compile_directional_constraints(
+        physical_constraints,
+        domain_labels if domain_labels is not None else [
+            f"x_{k}" for k in range(np.asarray(x_obs).shape[1])
+        ],
+        parameter_labels if parameter_labels is not None else [
+            f"theta_{k}" for k in range(dtheta)
+        ],
+        observable_labels if observable_labels is not None else ["observable"],
+        parameter_transforms=parameter_transforms,
+        observable_transforms=observable_transforms,
+    )
+    if directional_constraints["enabled"] and directional_constraints["mode"] == "hard":
+        theta_base = np.asarray(theta, dtype=float)
+        if theta_base.ndim == 1:
+            theta_base = np.broadcast_to(
+                theta_base, (len(x_obs), len(theta_base))
+            )
+        delta = initialize_hard_constraint_state(
+            delta,
+            lambda fields: theta_base + fields.T,
+            gp_eta,
+            x_obs,
+            directional_constraints,
+        )
+    configured_steps = np.array([prior["step_size"] for prior in kappa_hyperpriors])
+    if np.ndim(mh_scale_delta) == 0:
+        mh_scale_delta = np.full(dtheta, float(mh_scale_delta))
+    else:
+        mh_scale_delta = np.asarray(mh_scale_delta, dtype=float)
+    mh_scale_delta = configured_steps if has_configured_field_priors else mh_scale_delta
+    mh_scales = [
+        {
+            "log_ell_delta": prior["hyperparameter_step_sizes"]["log_rho"],
+            "log_var_delta": prior["hyperparameter_step_sizes"]["log_sigma"],
+        }
+        for prior in kappa_hyperpriors
+    ]
     accept_delta = np.zeros(dtheta)
     target_accept = 0.35
 
@@ -203,19 +297,20 @@ def run_delta_sampler(
         for k in range(dtheta):
             delta, accepted = mh_update_delta_k(
                 k, delta, theta, ell_delta[k], var_delta[k],
-                x_obs, y_obs, gp_eta, sigma2, mh_scale_delta
+                x_obs, y_obs, gp_eta, sigma2, mh_scale_delta[k],
+                constraints=directional_constraints,
             )
             accept_delta[k] += accepted
 
         if iteration < burn_in and (iteration + 1) % 50 == 0:
-            mean_accept = np.mean(accept_delta / (iteration + 1))
-            mh_scale_delta *= np.exp(0.05 * (mean_accept - target_accept))
+            recent_accept = accept_delta / (iteration + 1)
+            mh_scale_delta *= np.exp(0.05 * (recent_accept - target_accept))
 
         for k in range(dtheta):
             prior_ell, prior_var = _prior_for_kappa(kappa_hyperpriors, k)
             ell_delta[k], var_delta[k], _ = mh_update_delta_hyperparams(
                 delta[k], ell_delta[k], var_delta[k], x_obs,
-                prior_ell, prior_var, mh_scales,
+                prior_ell, prior_var, mh_scales[k],
                 allow_singular_covariance=allow_singular_covariance,
             )
         sigma2 = gibbs_sigma2(
@@ -240,6 +335,12 @@ def kappa_hyperprior_sensitivity(
     mh_scale_delta=0.15,
     allow_singular_covariance=False,
     random_state=0,
+    physical_constraints=None,
+    domain_labels=None,
+    parameter_labels=None,
+    observable_labels=None,
+    parameter_transforms=None,
+    observable_transforms=None,
 ):
     """Quantify posterior sensitivity to each kappa rho/sigma hyperprior.
 
@@ -267,19 +368,25 @@ def kappa_hyperprior_sensitivity(
                         x_obs, y_obs, theta, gp_eta, dtheta, n_mcmc,
                         burn_in, mh_scale_delta, allow_singular_covariance,
                         kappa_hyperpriors=priors, random_seed=seed,
+                        physical_constraints=physical_constraints,
+                        domain_labels=domain_labels,
+                        parameter_labels=parameter_labels,
+                        observable_labels=observable_labels,
+                        parameter_transforms=parameter_transforms,
+                        observable_transforms=observable_transforms,
                     )
-                    perturbed = [
-                        {
-                            name: values.copy()
-                            for name, values in prior.items()
-                        }
-                        for prior in priors
-                    ]
+                    perturbed = copy.deepcopy(priors)
                     perturbed[kappa_index][hyperparameter]["log_mu"] += np.log(factor)
                     perturbed_chain, _, _ = run_delta_sampler(
                         x_obs, y_obs, theta, gp_eta, dtheta, n_mcmc,
                         burn_in, mh_scale_delta, allow_singular_covariance,
                         kappa_hyperpriors=perturbed, random_seed=seed,
+                        physical_constraints=physical_constraints,
+                        domain_labels=domain_labels,
+                        parameter_labels=parameter_labels,
+                        observable_labels=observable_labels,
+                        parameter_transforms=parameter_transforms,
+                        observable_transforms=observable_transforms,
                     )
                     start = min(max(burn_in, 0), n_mcmc - 1)
                     nominal_mean = nominal_chain[start:].mean(axis=0)
@@ -336,6 +443,12 @@ def holdout_sensitivity_refit(
     allow_singular_covariance=False,
     random_state=0,
     kappa_hyperpriors=None,
+    physical_constraints=None,
+    domain_labels=None,
+    parameter_labels=None,
+    observable_labels=None,
+    parameter_transforms=None,
+    observable_transforms=None,
 ):
     """Run true refit-based holdout sensitivity analysis.
 
@@ -383,6 +496,12 @@ def holdout_sensitivity_refit(
                 n_mcmc, burn_in, mh_scale_delta, allow_singular_covariance,
                 kappa_hyperpriors=kappa_hyperpriors,
                 random_seed=int(random_state + len(cases)),
+                physical_constraints=physical_constraints,
+                domain_labels=domain_labels,
+                parameter_labels=parameter_labels,
+                observable_labels=observable_labels,
+                parameter_transforms=parameter_transforms,
+                observable_transforms=observable_transforms,
             )
             start = min(max(burn_in, 0), n_mcmc - 1)
             posterior = chain[start:]
@@ -602,7 +721,8 @@ def mh_update_delta_k(
     x_obs, y_obs,
     gp_eta,
     sigma2,
-    mh_scale
+    mh_scale,
+    constraints=None,
 ):
     No = len(x_obs)
 
@@ -616,29 +736,102 @@ def mh_update_delta_k(
     delta_prop = delta.copy()
     delta_prop[k] = proposal
 
-    # --- log posterior current ---
-    logpost_curr = (
-        log_likelihood_embedded(y_obs, x_obs, theta, delta, gp_eta, sigma2)
-        + gp_log_density(delta[k], K)
-    )
+    def log_posterior(candidate):
+        value = float(np.sum(log_likelihood_embedded(
+            y_obs, x_obs, theta, candidate, gp_eta, sigma2
+        )))
+        value += gp_log_density(candidate[k], K)
+        if constraints and constraints.get("enabled"):
+            theta_base = np.asarray(theta, dtype=float)
+            if theta_base.ndim == 1:
+                theta_base = np.broadcast_to(
+                    theta_base, (len(x_obs), len(theta_base))
+                )
+            theta_star = theta_base + candidate.T
+            value += monotonicity_log_penalty(
+                gp_eta, x_obs, theta_star, constraints
+            )
+        return value
 
-    # --- log posterior proposed ---
-    logpost_prop = (
-        log_likelihood_embedded(y_obs, x_obs, theta, delta_prop, gp_eta, sigma2)
-        + gp_log_density(proposal, K)
-    )
+    logpost_curr = log_posterior(delta)
+    logpost_prop = log_posterior(delta_prop)
 
     # print("mean proposal jump:", np.linalg.norm(delta_prop - delta))
 
-    log_alpha = logpost_prop - logpost_curr
-
-    # print(f"log posterior current: {logpost_curr:.3f}, proposed: {logpost_prop:.3f}, log alpha: {log_alpha:.3f}")
-
-    if np.log(np.random.rand()) < log_alpha:
+    if not np.isfinite(logpost_curr):
+        accepted = np.isfinite(logpost_prop)
+    elif not np.isfinite(logpost_prop):
+        accepted = False
+    else:
+        accepted = np.log(np.random.rand()) < logpost_prop - logpost_curr
+    if accepted:
         delta[k] = proposal
         return delta, True
     else:
         return delta, False
+
+
+def mh_update_delta_joint(
+    delta,
+    theta,
+    ell_delta,
+    var_delta,
+    x_obs,
+    y_obs,
+    gp_eta,
+    sigma2,
+    mh_scale,
+    constraints,
+):
+    """Jointly update discrepancy fields under monotonicity constraints."""
+    delta = np.asarray(delta, dtype=float)
+    covariances = [
+        rbf_kernel(x_obs, x_obs, ell=ell_delta[k], var=var_delta[k])
+        + 1e-8 * np.eye(len(x_obs))
+        for k in range(len(delta))
+    ]
+
+    def propose():
+        return np.vstack([
+            delta[k] + mh_scale * (
+                np.linalg.cholesky(covariances[k])
+                @ np.random.randn(len(x_obs))
+            )
+            for k in range(len(delta))
+        ])
+
+    proposal = propose()
+
+    def log_posterior(candidate):
+        value = float(np.sum(log_likelihood_embedded(
+            y_obs, x_obs, theta, candidate, gp_eta, sigma2
+        )))
+        value += sum(
+            gp_log_density(candidate[k], covariances[k])
+            for k in range(len(candidate))
+        )
+        theta_base = np.asarray(theta, dtype=float)
+        if theta_base.ndim == 1:
+            theta_base = np.broadcast_to(
+                theta_base, (len(x_obs), len(theta_base))
+            )
+        theta_star = theta_base + candidate.T
+        value += monotonicity_log_penalty(
+            gp_eta, x_obs, theta_star, constraints
+        )
+        return value
+
+    current_logpost = log_posterior(delta)
+    proposed_logpost = log_posterior(proposal)
+    if not np.isfinite(current_logpost):
+        accepted = np.isfinite(proposed_logpost)
+    elif not np.isfinite(proposed_logpost):
+        accepted = False
+    else:
+        accepted = np.log(np.random.rand()) < proposed_logpost - current_logpost
+    if accepted:
+        return proposal, True
+    return delta, False
 
 def export_emulator_json(gp, filename,path="results/"):
     """

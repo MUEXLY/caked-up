@@ -49,9 +49,10 @@ COLORS = {
 }
 NAV_ITEMS = [
     ("import", "1  IMPORT DATA /\n    MODEL"),
-    ("settings", "2  SETTINGS"),
-    ("run", "3  RUN / MONITOR"),
-    ("analyze", "4  ANALYZE"),
+    ("constraints", "2  PHYSICAL\n    CONSTRAINTS"),
+    ("settings", "3  SETTINGS"),
+    ("run", "4  RUN / MONITOR"),
+    ("analyze", "5  ANALYZE"),
 ]
 
 
@@ -361,6 +362,11 @@ class CalibrationGUI(tk.Tk):
         self.plot_settings_by_method: dict[str, dict] = {}
         self.import_tables: dict[str, dict[str, str]] = {}
         self.import_table_paths: dict[str, dict[str, str]] = {}
+        self.constraint_variables: dict[str, dict[str, list[str]]] = {}
+        self.constraint_editor_state: dict[str, dict] = {}
+        self.constraint_rows: list[dict[str, tk.Variable]] = []
+        self.boundary_constraint_rows: list[dict[str, tk.Variable]] = []
+        self.parameter_sign_rows: list[dict[str, tk.Variable]] = []
         self.page = "import"
         self.current_results_dir: Path | None = None
         self.process: subprocess.Popen | None = None
@@ -543,6 +549,20 @@ class CalibrationGUI(tk.Tk):
         self._render_page()
 
     def _settings_have_unsaved_changes(self) -> bool:
+        if self.page == "constraints":
+            try:
+                current = self._constraint_editor_value()
+            except (TypeError, ValueError):
+                return True
+            saved = self.config.get("calibration_settings", {}).get(
+                "physical_constraints",
+                {"enabled": False, "mode": "soft", "strength": 1.0, "relationships": [], "boundary_conditions": [], "parameter_sign_constraints": []},
+            )
+            saved = dict(saved)
+            saved.setdefault("relationships", [])
+            saved.setdefault("boundary_conditions", [])
+            saved.setdefault("parameter_sign_constraints", [])
+            return current != saved
         if self.page != "settings" or not hasattr(self, "settings_values"):
             return False
         for path, kind, variable in self.settings_values:
@@ -574,7 +594,7 @@ class CalibrationGUI(tk.Tk):
             return True
         choice = messagebox.askyesnocancel(
             "Unsaved settings",
-            "You have unsaved changes. Save them before leaving this window?\n\n"
+            "You have unsaved changes. Save them before leaving this page?\n\n"
             "Yes: save a working config\nNo: discard the changes\nCancel: stay here",
             parent=self,
         )
@@ -594,6 +614,30 @@ class CalibrationGUI(tk.Tk):
             with path.open("r", encoding="utf-8") as stream:
                 self.configs[method] = json.load(stream)
             config = self.configs[method]
+            # Configs saved by earlier GUI versions stored delta_eta beside
+            # kappa under calibration_settings.shrinkage_models. Normalize
+            # them on load so the settings pane and generated run config use
+            # the current hyperprior_settings schema.
+            if method == "CAKED-UP":
+                hyperpriors = config.setdefault("hyperprior_settings", {})
+                calibration = config.get("calibration_settings", {})
+                shrinkage_models = calibration.get("shrinkage_models", {})
+                legacy_delta = shrinkage_models.pop("delta_eta", None)
+                if "delta_eta" not in hyperpriors and isinstance(legacy_delta, dict):
+                    delta_gp = json.loads(json.dumps(legacy_delta))
+                    gp_settings = delta_gp.setdefault("gp", {})
+                    delta_gp["shrinkage_prior"] = "gp"
+                    delta_gp.pop("groups", None)
+                    delta_gp.pop("kappa_groups", None)
+                    legacy_scales = calibration.get("mh_scales", {})
+                    gp_settings.setdefault(
+                        "hyperparameter_step_sizes",
+                        {
+                            "log_ell_kappa": legacy_scales.get("log_ell_kappa", 0.1),
+                            "log_var_kappa": legacy_scales.get("log_var_kappa", 0.1),
+                        },
+                    )
+                    hyperpriors["delta_eta"] = delta_gp
             plot_settings = config.get("plot_settings", {})
             plot_path = config.get("plot_settings_path")
             if isinstance(plot_settings, str):
@@ -626,9 +670,24 @@ class CalibrationGUI(tk.Tk):
     def label_settings_key(self) -> str:
         return "plot_settings" if self.method == "CAKED-UP" else "label_settings"
 
-    def _heading(self, title: str, subtitle: str) -> None:
-        tk.Label(self.content, text=title, bg=COLORS["window"], fg=COLORS["text"], font=("Avenir Next", 23, "bold")).pack(anchor="w")
-        tk.Label(self.content, text=subtitle, bg=COLORS["window"], fg=COLORS["muted"], font=("Avenir Next", 11)).pack(anchor="w", pady=(5, 20))
+    def _heading(self, title: str, subtitle: str, parent: tk.Widget | None = None) -> None:
+        parent = parent or self.content
+        tk.Label(parent, text=title, bg=COLORS["window"], fg=COLORS["text"], font=("Avenir Next", 23, "bold")).pack(anchor="w")
+        tk.Label(parent, text=subtitle, bg=COLORS["window"], fg=COLORS["muted"], font=("Avenir Next", 11)).pack(anchor="w", pady=(5, 20))
+
+    def _make_scrollable_content(self, parent: tk.Widget) -> tk.Frame:
+        shell = tk.Frame(parent, bg=COLORS["window"])
+        shell.pack(fill="both", expand=True)
+        canvas = tk.Canvas(shell, bg=COLORS["window"], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(shell, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        inner = tk.Frame(canvas, bg=COLORS["window"])
+        window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda event: canvas.itemconfigure(window_id, width=event.width))
+        return inner
 
     def _field(
         self,
@@ -677,6 +736,7 @@ class CalibrationGUI(tk.Tk):
         {
             "import": self._render_import,
             "settings": self._render_settings,
+            "constraints": self._render_constraints,
             "run": self._render_run,
             "analyze": self._render_analyze,
         }[self.page]()
@@ -768,9 +828,15 @@ class CalibrationGUI(tk.Tk):
                 frames = _validate_input_tables(selected_tables)
             except Exception as exc:
                 self.import_tables.pop(self.method, None)
+                self.constraint_variables.pop(self.method, None)
                 messagebox.showerror("Could not read input tables", str(exc))
                 return
             self.import_tables[self.method] = selected_tables
+            self.constraint_variables[self.method] = {
+                "appdomain": [str(name) for name in frames["model_domain"].columns],
+                "inputparam": [str(name) for name in frames["model_parameters"].columns],
+                "observable": [str(name) for name in frames["model_outputs"].columns],
+            }
             summary = "\n".join(
                 f"{TABLE_FILES[key][1]}: {len(frame)} rows × {frame.shape[1]} columns"
                 for key, frame in frames.items()
@@ -843,6 +909,15 @@ class CalibrationGUI(tk.Tk):
             return inner
 
         def render_value(parent: tk.Widget, key: str, value, path: tuple[str, ...]) -> None:
+            if path[-1] == "physical_constraints":
+                return
+            if path in {
+                ("calibration_settings", "shrinkage_models", "kappa"),
+                ("output_settings", "validation_options", "kappa_hyperpriors"),
+            }:
+                return
+            if path[-1] in {"mh_scale_kappa_prior", "mh_scale_delta_prior"}:
+                return
             if isinstance(value, dict):
                 section = tk.LabelFrame(
                     parent,
@@ -868,7 +943,7 @@ class CalibrationGUI(tk.Tk):
             tk.Label(
                 row,
                 text=key.replace("_", " "),
-                width=29,
+                width=20 if path[0] == "hyperprior_settings" else 29,
                 anchor="w",
                 bg=COLORS["panel"],
                 fg=COLORS["text"],
@@ -927,11 +1002,76 @@ class CalibrationGUI(tk.Tk):
             self.settings_values.append((path, kind, variable))
 
         labels_key = self.label_settings_key
+
+        def render_hyperprior_columns(parent: tk.Widget, value: dict) -> None:
+            columns = tk.Frame(parent, bg=COLORS["window"])
+            columns.pack(fill="both", expand=True, pady=(8, 0))
+            kappa_pane = tk.LabelFrame(
+                columns,
+                text="Kappa fields",
+                bg=COLORS["panel"],
+                fg=COLORS["text"],
+                padx=8,
+                pady=8,
+                font=("Avenir Next", 10, "bold"),
+                highlightbackground=COLORS["border"],
+                highlightthickness=1,
+            )
+            kappa_pane.pack(side="left", fill="both", expand=True, padx=(0, 6))
+            tk.Label(
+                kappa_pane,
+                text=(
+                    "Each kappa field has one active prior family. Its initial "
+                    "hyperparameter values are computed from the configured prior means."
+                ),
+                bg=COLORS["panel"],
+                fg=COLORS["muted"],
+                wraplength=440,
+                justify="left",
+            ).pack(fill="x", padx=8, pady=(2, 8))
+            kappa_config = value.get("kappa_fields", {})
+            render_value(
+                kappa_pane, "kappa_fields", kappa_config,
+                ("hyperprior_settings", "kappa_fields"),
+            )
+
+            if "delta_eta" in value:
+                delta_pane = tk.LabelFrame(
+                    columns,
+                    text="Additive discrepancy (delta eta)",
+                    bg=COLORS["panel"],
+                    fg=COLORS["text"],
+                    padx=8,
+                    pady=8,
+                    font=("Avenir Next", 10, "bold"),
+                    highlightbackground=COLORS["border"],
+                    highlightthickness=1,
+                )
+                delta_pane.pack(side="left", fill="both", expand=True, padx=(6, 0))
+                tk.Label(
+                    delta_pane,
+                    text=(
+                        "GP hyperpriors for the additive discrepancy field. "
+                        "Initial length scale and variance use their configured prior means."
+                    ),
+                    bg=COLORS["panel"],
+                    fg=COLORS["muted"],
+                    wraplength=440,
+                    justify="left",
+                ).pack(fill="x", padx=8, pady=(2, 8))
+                render_value(
+                    delta_pane, "delta_eta", value["delta_eta"],
+                    ("hyperprior_settings", "delta_eta"),
+                )
+
         for section_name, section_value in self.config.items():
             if section_name in {"plot_settings_path", "input_settings", labels_key}:
                 continue
             tab_content = make_scrollable_tab(section_name)
-            render_value(tab_content, section_name, section_value, (section_name,))
+            if section_name == "hyperprior_settings" and isinstance(section_value, dict):
+                render_hyperprior_columns(tab_content, section_value)
+            else:
+                render_value(tab_content, section_name, section_value, (section_name,))
 
         labels = self.config.get(labels_key, self.plot_settings_by_method.get(self.method, {}))
         tab_content = make_scrollable_tab("plot_labels")
@@ -982,6 +1122,601 @@ class CalibrationGUI(tk.Tk):
 
         self._save_settings_callback = save_copy
         _make_button(self.content, "Save working config", save_copy).pack(anchor="w", pady=(12, 0))
+
+    def _constraint_editor_value(self) -> dict:
+        strength = float(self.constraint_strength_var.get())
+        if not np.isfinite(strength) or strength < 0:
+            raise ValueError("Constraint strength must be a finite, non-negative number.")
+        rows = []
+        for row in getattr(self, "constraint_rows", []):
+            selected_predictor = row["predictor"].get()
+            if selected_predictor not in row["predictor_map"]:
+                raise ValueError("Choose an available app-domain or input-parameter variable.")
+            predictor_type, predictor_name = row["predictor_map"][selected_predictor]
+            selected_response = row["response"].get()
+            if selected_response not in row["response_map"]:
+                raise ValueError("Choose an available response variable for every constraint row.")
+            response_type, response_name = row["response_map"][selected_response]
+            if (predictor_type, predictor_name) == (response_type, response_name):
+                raise ValueError("Choose two different variables for each relationship.")
+            direction = {
+                "increases": "increasing",
+                "decreases": "decreasing",
+            }.get(row["direction"].get(), row["direction"].get())
+            rows.append({
+                "predictor_type": predictor_type,
+                "predictor": predictor_name,
+                "response_type": response_type,
+                "response": response_name,
+                "direction": direction,
+            })
+        boundary_conditions = []
+        for row in getattr(self, "boundary_constraint_rows", []):
+            domain = row["domain"].get()
+            if domain not in row["domain_values"]:
+                raise ValueError("Choose an application-domain variable for each boundary condition.")
+            domain_name = row["domain_values"][domain]
+            target = row["target"].get()
+            if target not in row["target_map"]:
+                raise ValueError("Choose an input parameter or observable for each boundary condition.")
+            target_type, target_name = row["target_map"][target]
+            endpoint = row["endpoint"].get()
+            if endpoint not in {"minimum", "maximum"}:
+                raise ValueError("Choose a minimum or maximum application-domain boundary.")
+            try:
+                target_value = float(row["value"].get())
+                tolerance = float(row["tolerance"].get())
+            except ValueError as exc:
+                raise ValueError("Boundary target values and tolerances must be numeric.") from exc
+            if not np.isfinite(target_value) or not np.isfinite(tolerance) or tolerance <= 0:
+                raise ValueError("Boundary target values must be finite and tolerances must be greater than zero.")
+            boundary_conditions.append({
+                "domain": domain_name,
+                "endpoint": endpoint,
+                "target_type": target_type,
+                "target": target_name,
+                "value": target_value,
+                "tolerance": tolerance,
+            })
+        parameter_sign_constraints = []
+        sign_by_parameter = {}
+        for row in getattr(self, "parameter_sign_rows", []):
+            parameter = row["parameter"].get()
+            if parameter not in row["parameter_values"]:
+                raise ValueError("Choose an input parameter for each sign constraint.")
+            sign = row["sign"].get()
+            if sign not in {"positive", "negative"}:
+                raise ValueError("Choose whether each input parameter must be positive or negative.")
+            if parameter in sign_by_parameter:
+                raise ValueError(f"Input parameter {parameter!r} has more than one sign constraint.")
+            sign_by_parameter[parameter] = sign
+            parameter_sign_constraints.append({"parameter": parameter, "sign": sign})
+        return {
+            "enabled": bool(self.constraint_enabled_var.get()),
+            "mode": self.constraint_mode_var.get(),
+            "strength": strength,
+            "relationships": rows,
+            "boundary_conditions": boundary_conditions,
+            "parameter_sign_constraints": parameter_sign_constraints,
+        }
+
+    def _render_constraints(self) -> None:
+        page_content = self._make_scrollable_content(self.content)
+        self._heading(
+            "Physical constraints",
+            "Define monotonic relationships, endpoint values, and input-parameter sign requirements. Hard rules reject violations; soft rules add a posterior penalty.",
+            parent=page_content,
+        )
+        config = self.config.setdefault("calibration_settings", {}).get(
+            "physical_constraints", {}
+        )
+        if not isinstance(config, dict):
+            config = {}
+        self.constraint_enabled_var = tk.BooleanVar(
+            value=bool(config.get("enabled", False))
+        )
+        self.constraint_mode_var = tk.StringVar(
+            value=str(config.get("mode", "soft"))
+        )
+        self.constraint_strength_var = tk.StringVar(
+            value=str(config.get("strength", 1.0))
+        )
+        self.constraint_rows = []
+        self.boundary_constraint_rows = []
+        self.parameter_sign_rows = []
+
+        controls = self._card(page_content)
+        tk.Checkbutton(
+            controls,
+            text="Enable physical constraints",
+            variable=self.constraint_enabled_var,
+            onvalue=True,
+            offvalue=False,
+            bg=COLORS["panel"],
+            fg=COLORS["text"],
+            activebackground=COLORS["panel"],
+            activeforeground=COLORS["text"],
+            selectcolor=COLORS["panel_alt"],
+            font=("Avenir Next", 10, "bold"),
+        ).pack(side="left", padx=(0, 20))
+        tk.Label(
+            controls, text="Enforcement", bg=COLORS["panel"], fg=COLORS["text"]
+        ).pack(side="left", padx=(0, 6))
+        ttk.Combobox(
+            controls,
+            textvariable=self.constraint_mode_var,
+            values=("hard", "soft"),
+            state="readonly",
+            style="Dark.TCombobox",
+            width=10,
+        ).pack(side="left")
+        tk.Label(
+            controls, text="Soft strength", bg=COLORS["panel"], fg=COLORS["text"]
+        ).pack(side="left", padx=(18, 6))
+        strength_entry = tk.Entry(
+            controls,
+            textvariable=self.constraint_strength_var,
+            width=10,
+            relief="flat",
+            bg=COLORS["panel_alt"],
+            fg=COLORS["text"],
+            insertbackground=COLORS["text"],
+        )
+        strength_entry.pack(side="left", ipady=5)
+        self.constraint_mode_var.trace_add(
+            "write",
+            lambda *_: strength_entry.configure(
+                state="normal" if self.constraint_mode_var.get() == "soft" else "disabled"
+            ),
+        )
+        if self.constraint_mode_var.get() == "hard":
+            strength_entry.configure(state="disabled")
+
+        available = self.constraint_variables.get(
+            self.method, {"appdomain": [], "inputparam": [], "observable": []}
+        )
+        predictor_map = {
+            f"App domain · {name}": ("appdomain", name)
+            for name in available.get("appdomain", [])
+        }
+        predictor_map.update({
+            f"Input parameter · {name}": ("inputparam", name)
+            for name in available.get("inputparam", [])
+        })
+        response_map = {
+            f"App domain · {name}": ("appdomain", name)
+            for name in available.get("appdomain", [])
+        }
+        response_map.update({
+            f"Input parameter · {name}": ("inputparam", name)
+            for name in available.get("inputparam", [])
+        })
+        response_map.update({
+            f"Observable · {name}": ("observable", name)
+            for name in available.get("observable", [])
+        })
+        old_rows = config.get("relationships", [])
+        if not isinstance(old_rows, list):
+            old_rows = []
+        for old in old_rows:
+            if not isinstance(old, dict):
+                continue
+            ptype = old.get("predictor_type")
+            pname = old.get("predictor")
+            if ptype in {"appdomain", "inputparam"} and pname:
+                predictor_map.setdefault(f"{ptype.title()} · {pname}", (ptype, pname))
+            response_type = old.get("response_type", "observable")
+            response_name = old.get("response", old.get("observable"))
+            response_titles = {
+                "appdomain": "App domain",
+                "inputparam": "Input parameter",
+                "observable": "Observable",
+            }
+            if response_type in response_titles and response_name:
+                response_map.setdefault(
+                    f"{response_titles[response_type]} · {response_name}",
+                    (response_type, response_name),
+                )
+
+        list_card = self._card(page_content)
+        header = tk.Frame(list_card, bg=COLORS["panel"])
+        header.pack(fill="x", pady=(0, 7))
+        for title in (
+            "As this variable increases",
+            "this variable",
+            "direction",
+        ):
+            tk.Label(
+                header,
+                text=title,
+                bg=COLORS["panel"],
+                fg=COLORS["muted"],
+                font=("Avenir Next", 9, "bold"),
+                anchor="w",
+            ).pack(side="left", fill="x", expand=True, padx=(0, 10))
+
+        row_list = tk.Frame(list_card, bg=COLORS["panel"])
+        row_list.pack(fill="x")
+        no_data = not predictor_map or not response_map
+        if no_data:
+            tk.Label(
+                row_list,
+                text="Load and validate data tables in Import Data / Model to populate variable lists.",
+                bg=COLORS["panel"],
+                fg=COLORS["muted"],
+                anchor="w",
+            ).pack(fill="x", pady=8)
+
+        def add_row(initial=None):
+            initial = initial or {}
+            row_frame = tk.Frame(row_list, bg=COLORS["panel_alt"], padx=8, pady=7)
+            row_frame.pack(fill="x", pady=3)
+            tk.Label(
+                row_frame,
+                text="As",
+                bg=COLORS["panel_alt"],
+                fg=COLORS["text"],
+            ).pack(side="left", padx=(0, 6))
+            predictor_var = tk.StringVar()
+            if initial.get("predictor_type") and initial.get("predictor"):
+                display = f"{initial['predictor_type'].title()} · {initial['predictor']}"
+                predictor_map.setdefault(
+                    display,
+                    (initial["predictor_type"], initial["predictor"]),
+                )
+                predictor_var.set(display)
+            elif predictor_map:
+                predictor_var.set(next(iter(predictor_map)))
+            predictor_box = ttk.Combobox(
+                row_frame,
+                textvariable=predictor_var,
+                values=list(predictor_map),
+                state="readonly" if predictor_map else "disabled",
+                style="Dark.TCombobox",
+            )
+            predictor_box.pack(side="left", fill="x", expand=True, padx=(0, 10))
+            tk.Label(
+                row_frame,
+                text="increases,",
+                bg=COLORS["panel_alt"],
+                fg=COLORS["text"],
+            ).pack(side="left", padx=(0, 6))
+            response_var = tk.StringVar()
+            response_type = initial.get("response_type", "observable")
+            response_name = initial.get("response", initial.get("observable"))
+            if response_name:
+                response_title = {
+                    "appdomain": "App domain",
+                    "inputparam": "Input parameter",
+                    "observable": "Observable",
+                }.get(response_type, "Observable")
+                response_var.set(f"{response_title} · {response_name}")
+            elif response_map:
+                response_var.set(next(iter(response_map)))
+            response_box = ttk.Combobox(
+                row_frame,
+                textvariable=response_var,
+                values=list(response_map),
+                state="readonly" if response_map else "disabled",
+                style="Dark.TCombobox",
+            )
+            response_box.pack(side="left", fill="x", expand=True, padx=(0, 10))
+            stored_direction = str(initial.get("direction", "decreasing"))
+            direction_var = tk.StringVar(value=(
+                "increases" if stored_direction == "increasing" else "decreases"
+            ))
+            direction_box = ttk.Combobox(
+                row_frame,
+                textvariable=direction_var,
+                values=("increases", "decreases"),
+                state="readonly",
+                style="Dark.TCombobox",
+                width=16,
+            )
+            direction_box.pack(side="left", padx=(0, 10))
+            row_vars = {
+                "predictor": predictor_var,
+                "predictor_map": predictor_map,
+                "response": response_var,
+                "response_map": response_map,
+                "direction": direction_var,
+                "frame": row_frame,
+            }
+            self.constraint_rows.append(row_vars)
+
+            def remove_row():
+                row_frame.destroy()
+                self.constraint_rows.remove(row_vars)
+
+            _make_button(row_frame, "Remove", remove_row).pack(side="left")
+
+        for saved_row in old_rows:
+            if isinstance(saved_row, dict) and "predictor_type" in saved_row:
+                add_row(saved_row)
+
+        row_buttons = tk.Frame(list_card, bg=COLORS["panel"])
+        row_buttons.pack(fill="x", pady=(9, 0))
+        _make_button(
+            row_buttons,
+            "Add constraint row",
+            lambda: add_row() if predictor_map and response_map else None,
+            state="normal" if predictor_map and response_map else "disabled",
+            tooltip=None if predictor_map and response_map else "Load and validate data first.",
+        ).pack(side="left")
+
+        boundary_card = self._card(page_content)
+        tk.Label(
+            boundary_card,
+            text="Endpoint target values",
+            bg=COLORS["panel"],
+            fg=COLORS["text"],
+            font=("Avenir Next", 11, "bold"),
+            anchor="w",
+        ).pack(fill="x", pady=(0, 4))
+        tk.Label(
+            boundary_card,
+            text=(
+                "At a selected application-domain minimum or maximum, require a "
+                "corrected input parameter or emulator prediction to approach a physical value. "
+                "Target and tolerance use physical units; extrema are taken over the loaded observations."
+            ),
+            bg=COLORS["panel"],
+            fg=COLORS["muted"],
+            wraplength=900,
+            justify="left",
+            anchor="w",
+        ).pack(fill="x", pady=(0, 8))
+        boundary_domain_values = {
+            f"App domain · {name}": name
+            for name in available.get("appdomain", [])
+        }
+        boundary_target_map = {
+            f"Input parameter · {name}": ("inputparam", name)
+            for name in available.get("inputparam", [])
+        }
+        boundary_target_map.update({
+            f"Observable · {name}": ("observable", name)
+            for name in available.get("observable", [])
+        })
+        boundary_rows_frame = tk.Frame(boundary_card, bg=COLORS["panel"])
+        boundary_rows_frame.pack(fill="x")
+
+        def add_boundary_row(initial=None):
+            initial = initial or {}
+            row_frame = tk.Frame(
+                boundary_rows_frame, bg=COLORS["panel_alt"], padx=8, pady=7
+            )
+            row_frame.pack(fill="x", pady=3)
+            tk.Label(row_frame, text="At", bg=COLORS["panel_alt"], fg=COLORS["text"]).pack(side="left", padx=(0, 5))
+            domain_var = tk.StringVar()
+            domain_display = next(
+                (display for display, name in boundary_domain_values.items()
+                 if name == initial.get("domain")),
+                next(iter(boundary_domain_values), ""),
+            )
+            domain_var.set(domain_display)
+            domain_box = ttk.Combobox(
+                row_frame, textvariable=domain_var,
+                values=list(boundary_domain_values),
+                state="readonly" if boundary_domain_values else "disabled",
+                style="Dark.TCombobox", width=18,
+            )
+            domain_box.pack(side="left", padx=(0, 6))
+            endpoint_var = tk.StringVar(value=initial.get("endpoint", "minimum"))
+            endpoint_box = ttk.Combobox(
+                row_frame, textvariable=endpoint_var,
+                values=("minimum", "maximum"), state="readonly",
+                style="Dark.TCombobox", width=10,
+            )
+            endpoint_box.pack(side="left", padx=(0, 6))
+            tk.Label(row_frame, text="the", bg=COLORS["panel_alt"], fg=COLORS["text"]).pack(side="left", padx=(0, 5))
+            target_var = tk.StringVar()
+            target_display = next(
+                (display for display, value in boundary_target_map.items()
+                 if value == (initial.get("target_type"), initial.get("target"))),
+                next(iter(boundary_target_map), ""),
+            )
+            target_var.set(target_display)
+            target_box = ttk.Combobox(
+                row_frame, textvariable=target_var,
+                values=list(boundary_target_map),
+                state="readonly" if boundary_target_map else "disabled",
+                style="Dark.TCombobox", width=24,
+            )
+            target_box.pack(side="left", padx=(0, 6))
+            tk.Label(row_frame, text="converges to", bg=COLORS["panel_alt"], fg=COLORS["text"]).pack(side="left", padx=(0, 5))
+            value_var = tk.StringVar(value=str(initial.get("value", "")))
+            value_entry = tk.Entry(
+                row_frame, textvariable=value_var, width=12, relief="flat",
+                bg=COLORS["panel"], fg=COLORS["text"], insertbackground=COLORS["text"],
+            )
+            value_entry.pack(side="left", ipady=5, padx=(0, 6))
+            tk.Label(row_frame, text="±", bg=COLORS["panel_alt"], fg=COLORS["text"]).pack(side="left", padx=(0, 5))
+            tolerance_var = tk.StringVar(value=str(initial.get("tolerance", 0.01)))
+            tolerance_entry = tk.Entry(
+                row_frame, textvariable=tolerance_var, width=10, relief="flat",
+                bg=COLORS["panel"], fg=COLORS["text"], insertbackground=COLORS["text"],
+            )
+            tolerance_entry.pack(side="left", ipady=5, padx=(0, 8))
+            row_vars = {
+                "domain": domain_var,
+                "domain_values": boundary_domain_values,
+                "endpoint": endpoint_var,
+                "target": target_var,
+                "target_map": boundary_target_map,
+                "value": value_var,
+                "tolerance": tolerance_var,
+                "frame": row_frame,
+            }
+            self.boundary_constraint_rows.append(row_vars)
+
+            def remove_boundary_row():
+                row_frame.destroy()
+                self.boundary_constraint_rows.remove(row_vars)
+
+            _make_button(row_frame, "Remove", remove_boundary_row).pack(side="left")
+
+        for saved_boundary in config.get("boundary_conditions", []):
+            if isinstance(saved_boundary, dict):
+                if saved_boundary.get("domain") not in boundary_domain_values.values():
+                    boundary_domain_values.setdefault(
+                        f"App domain · {saved_boundary.get('domain')}",
+                        saved_boundary.get("domain"),
+                    )
+                saved_target = (saved_boundary.get("target_type"), saved_boundary.get("target"))
+                if saved_target not in boundary_target_map.values() and all(saved_target):
+                    prefix = "Input parameter" if saved_target[0] == "inputparam" else "Observable"
+                    boundary_target_map[f"{prefix} · {saved_target[1]}"] = saved_target
+                add_boundary_row(saved_boundary)
+        _make_button(
+            boundary_card,
+            "Add endpoint condition",
+            lambda: add_boundary_row() if boundary_domain_values and boundary_target_map else None,
+            state="normal" if boundary_domain_values and boundary_target_map else "disabled",
+            tooltip=None if boundary_domain_values and boundary_target_map else "Load and validate data first.",
+        ).pack(anchor="w", pady=(8, 0))
+
+        sign_card = self._card(page_content)
+        tk.Label(
+            sign_card,
+            text="Input parameter sign across the application domain",
+            bg=COLORS["panel"],
+            fg=COLORS["text"],
+            font=("Avenir Next", 11, "bold"),
+            anchor="w",
+        ).pack(fill="x", pady=(0, 4))
+        tk.Label(
+            sign_card,
+            text=(
+                "Require the calibrated value θ* of a parameter to stay positive "
+                "or negative over the full application-domain trajectory."
+            ),
+            bg=COLORS["panel"],
+            fg=COLORS["muted"],
+            wraplength=900,
+            justify="left",
+            anchor="w",
+        ).pack(fill="x", pady=(0, 8))
+        sign_parameters = list(available.get("inputparam", []))
+        sign_rows_frame = tk.Frame(sign_card, bg=COLORS["panel"])
+        sign_rows_frame.pack(fill="x")
+
+        def add_parameter_sign_row(initial=None):
+            initial = initial or {}
+            row_frame = tk.Frame(
+                sign_rows_frame, bg=COLORS["panel_alt"], padx=8, pady=7
+            )
+            row_frame.pack(fill="x", pady=3)
+            tk.Label(
+                row_frame,
+                text="θ* for",
+                bg=COLORS["panel_alt"],
+                fg=COLORS["text"],
+            ).pack(side="left", padx=(0, 6))
+            parameter_var = tk.StringVar(value=initial.get("parameter", ""))
+            if not parameter_var.get() and sign_parameters:
+                parameter_var.set(sign_parameters[0])
+            parameter_box = ttk.Combobox(
+                row_frame,
+                textvariable=parameter_var,
+                values=sign_parameters,
+                state="readonly" if sign_parameters else "disabled",
+                style="Dark.TCombobox",
+                width=24,
+            )
+            parameter_box.pack(side="left", padx=(0, 8))
+            tk.Label(
+                row_frame,
+                text="stays",
+                bg=COLORS["panel_alt"],
+                fg=COLORS["text"],
+            ).pack(side="left", padx=(0, 6))
+            sign_var = tk.StringVar(value=initial.get("sign", "positive"))
+            sign_box = ttk.Combobox(
+                row_frame,
+                textvariable=sign_var,
+                values=("positive", "negative"),
+                state="readonly",
+                style="Dark.TCombobox",
+                width=12,
+            )
+            sign_box.pack(side="left", padx=(0, 8))
+            row_vars = {
+                "parameter": parameter_var,
+                "parameter_values": sign_parameters,
+                "sign": sign_var,
+                "frame": row_frame,
+            }
+            self.parameter_sign_rows.append(row_vars)
+
+            def remove_sign_row():
+                row_frame.destroy()
+                self.parameter_sign_rows.remove(row_vars)
+
+            _make_button(row_frame, "Remove", remove_sign_row).pack(side="left")
+
+        for saved_sign in config.get("parameter_sign_constraints", []):
+            if isinstance(saved_sign, dict):
+                if saved_sign.get("parameter") and saved_sign["parameter"] not in sign_parameters:
+                    sign_parameters.append(saved_sign["parameter"])
+                add_parameter_sign_row(saved_sign)
+        _make_button(
+            sign_card,
+            "Add parameter sign constraint",
+            lambda: add_parameter_sign_row() if sign_parameters else None,
+            state="normal" if sign_parameters else "disabled",
+            tooltip=None if sign_parameters else "Load and validate data first.",
+        ).pack(anchor="w", pady=(8, 0))
+
+        tk.Label(
+            page_content,
+            text=(
+                "Observable monotonic rows constrain the full calibrated prediction along the "
+                "application domain. Endpoint rows constrain values at domain extrema, and sign "
+                "rows keep θ* positive or negative throughout the domain. Hard mode rejects "
+                "violating states; soft mode adds a quadratic penalty."
+            ),
+            bg=COLORS["window"],
+            fg=COLORS["muted"],
+            wraplength=900,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 12))
+
+        def save_constraints() -> bool:
+            try:
+                updated = json.loads(json.dumps(self.config))
+                constraint_value = self._constraint_editor_value()
+                if constraint_value["enabled"] and not (
+                    constraint_value["relationships"]
+                    or constraint_value["boundary_conditions"]
+                    or constraint_value["parameter_sign_constraints"]
+                ):
+                    raise ValueError("Add at least one row or turn off physical constraints.")
+                if constraint_value["mode"] == "soft" and constraint_value["strength"] <= 0:
+                    raise ValueError("Soft constraint strength must be greater than zero.")
+                updated.setdefault("calibration_settings", {})[
+                    "physical_constraints"
+                ] = constraint_value
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                messagebox.showerror("Invalid physical constraints", str(exc))
+                return False
+            self.configs[self.method] = updated
+            destination = APP_ROOT / "gui_runs" / "working_configs" / (
+                "caked_up.json" if self.method == "CAKED-UP" else "ib_framework.json"
+            )
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(json.dumps(updated, indent=2), encoding="utf-8")
+            messagebox.showinfo(
+                "Working config saved",
+                f"Physical constraints saved without changing the source config:\n{destination}",
+            )
+            self.status_label.configure(text="CONSTRAINTS SAVED", fg=COLORS["success"])
+            return True
+
+        self._save_settings_callback = save_constraints
+        _make_button(page_content, "Save physical constraints", save_constraints).pack(
+            anchor="w", pady=(4, 0)
+        )
 
     def _settings_prior_options(self, path: tuple[str, ...]) -> set[str]:
         """Return configured kappa prior blocks available beside a selector."""

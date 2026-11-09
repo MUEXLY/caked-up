@@ -2,10 +2,39 @@
     "calibration_settings":{
         "N_mcmc": 20000,
         "burn_in": 1000,
-        "mh_scale_delta_prior": 0.15,
         "theta_initialization":"fixed",
         "posterior_predictive_samples": 200,
-        "allow_singular_covariance": true
+        "allow_singular_covariance": true,
+        "physical_constraints": {
+            "enabled": false,
+            "mode": "soft",
+            "strength": 1.0,
+            "relationships": [],
+            "boundary_conditions": [],
+            "parameter_sign_constraints": []
+        }
+    },
+    "hyperprior_settings": {
+        "kappa_fields": {
+            "kappa1": {
+                "rho": {"log_mu": -1.0, "log_sigma": 1.0},
+                "sigma": {"log_mu": -1.0, "log_sigma": 1.0},
+                "step_size": 0.15,
+                "hyperparameter_step_sizes": {"log_rho": 0.1, "log_sigma": 0.1}
+            },
+            "kappa2": {
+                "rho": {"log_mu": -1.0, "log_sigma": 1.0},
+                "sigma": {"log_mu": -1.0, "log_sigma": 1.0},
+                "step_size": 0.15,
+                "hyperparameter_step_sizes": {"log_rho": 0.1, "log_sigma": 0.1}
+            },
+            "kappa3": {
+                "rho": {"log_mu": -1.0, "log_sigma": 1.0},
+                "sigma": {"log_mu": -1.0, "log_sigma": 1.0},
+                "step_size": 0.15,
+                "hyperparameter_step_sizes": {"log_rho": 0.1, "log_sigma": 0.1}
+            }
+        }
     },
     "input_settings":{
         "input_delimiter": "\t",
@@ -80,16 +109,6 @@
             "save_model_json": true
         },
         "validation_options": {
-            "kappa_hyperpriors": {
-                "kappa1": {
-                    "rho": {"log_mu": -1.0, "log_sigma": 1.0},
-                    "sigma": {"log_mu": -1.0, "log_sigma": 1.0}
-                },
-                "kappa2": {
-                    "rho": {"log_mu": -1.0, "log_sigma": 1.0},
-                    "sigma": {"log_mu": -1.0, "log_sigma": 1.0}
-                }
-            },
             "kappa_hyperprior_factors": [0.5, 1.0, 2.0],
             "kappa_hyperprior_repeats": 5,
             "kappa_hyperprior_n_mcmc": 2000,

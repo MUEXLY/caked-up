@@ -13,6 +13,11 @@ from functs import *
 from shrinkage import *
 from plottingFuncts import *
 from plottingFuncts import _plot_label
+from frameworks.integrated_delta.physical_constraints import (
+    compile_directional_constraints,
+    initialize_hard_constraint_state,
+    monotonicity_log_penalty,
+)
 import json
 
 def main():
@@ -29,11 +34,28 @@ def main():
     with open(config_path, "r") as f:
         config = json.load(f)
 
+    # Backward compatibility for configs created before delta_eta was moved
+    # into the dedicated hyperprior settings group.
+    hyperprior_settings = config.setdefault("hyperprior_settings", {})
+    calibration_settings = config.get("calibration_settings", {})
+    legacy_models = calibration_settings.get("shrinkage_models", {})
+    legacy_delta_eta = legacy_models.get("delta_eta")
+    if "delta_eta" not in hyperprior_settings and isinstance(legacy_delta_eta, dict):
+        delta_eta = copy.deepcopy(legacy_delta_eta)
+        delta_eta["shrinkage_prior"] = "gp"
+        gp = delta_eta.setdefault("gp", {})
+        scales = calibration_settings.get("mh_scales", {})
+        gp.setdefault(
+            "hyperparameter_step_sizes",
+            {
+                "log_ell_kappa": scales.get("log_ell_kappa", 0.1),
+                "log_var_kappa": scales.get("log_var_kappa", 0.1),
+            },
+        )
+        hyperprior_settings["delta_eta"] = delta_eta
+
     # store calibration settings
     calibration_settings = config["calibration_settings"]
-
-    # load settings for shrinkage models
-    shrinkage_settings = calibration_settings["shrinkage_models"]
 
     # load settings for orthogonalization of delta_eta with respect to sensitivities G
     orthogonalization_settings = calibration_settings["orthogonalization_settings"]
@@ -195,6 +217,46 @@ def main():
 
     theta_labels = [col.replace('theta_', '') for col in calib_params.columns]
     app_labels = [col.replace('x_', '') for col in model_domain.columns]
+    physical_theta_transforms = {
+        col.replace("theta_", ""): {
+            "offset": float(model_data[col].min()),
+            "scale": float(model_data[col].max() - model_data[col].min()),
+        }
+        for col in calib_params.columns
+    }
+    zeta_columns = [
+        col for col in model_data.columns
+        if col.startswith("zeta_") and not col.endswith(("_mean", "_std"))
+    ]
+    constraint_y_mean = float(model_data[zeta_columns].mean().iloc[0])
+    constraint_y_std = float(model_data[zeta_columns].std().iloc[0])
+    physical_observable_transforms = {
+        col.replace("zeta_", ""): {
+            "offset": constraint_y_mean,
+            "scale": constraint_y_std,
+        }
+        for col in zeta_columns
+    }
+    directional_constraints = compile_directional_constraints(
+        calibration_settings.get("physical_constraints"),
+        app_labels,
+        theta_labels,
+        [
+            col.replace("zeta_", "") for col in zeta_columns
+        ],
+        parameter_transforms=physical_theta_transforms,
+        observable_transforms=physical_observable_transforms,
+    )
+    if directional_constraints["enabled"]:
+        constraint_count = (
+            len(directional_constraints["rules"])
+            + len(directional_constraints["boundary_rules"])
+            + len(directional_constraints["parameter_sign_rules"])
+        )
+        print(
+            f"Enabled {constraint_count} {directional_constraints['mode']} "
+            "physical constraint(s)."
+        )
 
     print(f'Normalizing input data (simulator_space)...')
 
@@ -370,19 +432,66 @@ def main():
     # 1c. Instantiate shrinkage prior objects based on config
     # ============================================================
 
-    kappa_prior_config = shrinkage_settings["kappa"]
+    configured_fields = hyperprior_settings.get("kappa_fields", {})
     kappa_priors = []
+    mh_scale_kappa_initial = []
     for k in range(dtheta):
-        dimension_config = copy.deepcopy(kappa_prior_config)
-        dimension_overrides = kappa_prior_config.get("by_dimension", [])
-        if k < len(dimension_overrides):
-            active_prior = dimension_config["shrinkage_prior"]
-            dimension_config[active_prior].update(dimension_overrides[k])
+        field_settings = configured_fields.get(f"kappa{k + 1}", {})
+        if not field_settings:
+            raise ValueError(
+                f"hyperprior_settings.kappa_fields.kappa{k + 1} is required "
+                "for each calibrated parameter field"
+            )
+        dimension_config = copy.deepcopy(field_settings)
+        # Start each hyperparameter at the expectation of its configured
+        # hyperprior. GP priors are log-normal in the positive parameter.
+        active_prior = dimension_config["shrinkage_prior"]
+        prior_config = dimension_config.get(active_prior, {})
+        if active_prior == "gp":
+            for parameter in ("ell", "var"):
+                prior = prior_config.get(f"{parameter}_prior", {})
+                if "mu" in prior and "sigma" in prior:
+                    prior_config[f"{parameter}_init"] = float(
+                        np.exp(prior["mu"] + 0.5 * prior["sigma"] ** 2)
+                    )
+        elif active_prior in {"lasso", "fused_lasso"}:
+            prior = prior_config.get("lambda_prior", {})
+            if prior.get("rate", 0) > 0:
+                prior_config["lambda_init"] = float(
+                    prior["shape"] / prior["rate"]
+                )
+        elif active_prior == "spike_slab":
+            prior = prior_config.get("pi_prior", {})
+            total = prior.get("alpha", 0) + prior.get("beta", 0)
+            if total > 0:
+                prior_config["pi_init"] = float(prior["alpha"] / total)
+        elif active_prior == "horseshoe":
+            # tau_prior is expressed as a normal distribution on log(tau).
+            prior = prior_config.get("tau_prior", {})
+            if "mu" in prior and "sigma" in prior:
+                prior_config["tau_init"] = float(
+                    np.exp(prior["mu"] + 0.5 * prior["sigma"] ** 2)
+                )
         kappa_priors.append(create_prior(dimension_config))
+        mh_scale_kappa_initial.append(float(field_settings.get(
+            "step_size", 0.5
+        )))
 
     print(f"Instantiated kappa_priors of type {kappa_priors[0].name} with initial state: {kappa_priors[0].get_state()}")
     
-    delta_eta_prior=create_prior(shrinkage_settings["delta_eta"])
+    delta_eta_config = copy.deepcopy(hyperprior_settings.get("delta_eta", {}))
+    if delta_eta_config.get("shrinkage_prior") != "gp" or "gp" not in delta_eta_config:
+        raise ValueError(
+            "hyperprior_settings.delta_eta must define a GP prior with "
+            "ell_prior and var_prior"
+        )
+    delta_gp_config = delta_eta_config["gp"]
+    for parameter in ("ell", "var"):
+        prior = delta_gp_config[f"{parameter}_prior"]
+        delta_gp_config[f"{parameter}_init"] = float(
+            np.exp(prior["mu"] + 0.5 * prior["sigma"] ** 2)
+        )
+    delta_eta_prior=create_prior(delta_eta_config)
     print(f"Instantiated delta_eta_prior of type {delta_eta_prior.name} with initial state: {delta_eta_prior.get_state()}")
 
 
@@ -554,6 +663,25 @@ def main():
     kappa_z = np.zeros((dtheta, No))  # shape (dtheta, No)
     # kappa_theta = np.zeros((dtheta, No))
     kappa_theta=W @ kappa_z  # shape (dtheta, No)``
+    if directional_constraints["enabled"] and directional_constraints["mode"] == "hard":
+        print("Searching for a feasible starting state for hard constraints...")
+        theta_base_obs = (
+            np.tile(theta_fixed, (No, 1))
+            if theta_fixed.ndim == 1
+            else theta_fixed
+        )
+        kappa_z = initialize_hard_constraint_state(
+            kappa_z,
+            lambda fields: theta_base_obs + (W @ fields).T,
+            gp_eta,
+            x_obs,
+            directional_constraints,
+        )
+        kappa_theta = W @ kappa_z
+        print(
+            "Initialized kappa fields at a feasible hard-constraint state; "
+            f"latent correction norm={np.linalg.norm(kappa_z):.4g}."
+        )
 
 
     # Initial hyperparameters for each \kappa (i.e. each theta dimension)
@@ -579,13 +707,12 @@ def main():
     # 5. Sampler config
     # ============================================================
     Nmcmc = calibration_settings['N_mcmc']
-    mh_scale = calibration_settings['mh_scale_kappa_prior']
-    mh_scale_kappa=np.ones(dtheta) * mh_scale
+    mh_scale_kappa=np.asarray(mh_scale_kappa_initial, dtype=float)
 
     # kappa_prior_ell=calibration_settings['kappa_priors']['ell']
     # kappa_prior_var=calibration_settings['kappa_priors']['var']
 
-    mh_scales=calibration_settings['mh_scales']
+    mh_scales = {"log_ell_kappa": 0.1, "log_var_kappa": 0.1}
 
     a_sigma = calibration_settings['sigma2_prior_vals']['a']
     b_sigma = calibration_settings['sigma2_prior_vals']['b']
@@ -707,20 +834,76 @@ def main():
     for it in range(Nmcmc):
 
         # ---- update kappa fields ----
-        for k in range(dtheta):
-            kappa_z, acc = kappa_priors[k].sample_kappa_field(
-                k,
-                kappa_z,
-                delta_eta,
-                theta_fixed,
-                x_obs,
-                y_obs,
-                gp_eta,
-                sigma2,
-                mh_scale_kappa[k]
-            )
-            accept_kappa[k] += acc
-            accept_trace[k].append(acc)
+        if directional_constraints["enabled"]:
+            def joint_log_posterior(candidate):
+                physical_kappa = W @ candidate
+                likelihood = float(np.sum(log_likelihood_embedded(
+                    y_obs,
+                    x_obs,
+                    theta_fixed,
+                    physical_kappa,
+                    delta_eta,
+                    gp_eta,
+                    sigma2,
+                )))
+                prior_density = 0.0
+                for prior_index, prior in enumerate(kappa_priors):
+                    if prior.name in {"spike_slab", "horseshoe"}:
+                        prior_density += prior.log_prior(
+                            prior_index, candidate[prior_index], x_obs
+                        )
+                    else:
+                        prior_density += prior.log_prior(candidate[prior_index], x_obs)
+                theta_base = (
+                    np.tile(theta_fixed, (No, 1))
+                    if theta_fixed.ndim == 1
+                    else theta_fixed
+                )
+                theta_star = theta_base + physical_kappa.T
+                constraint_density = monotonicity_log_penalty(
+                    gp_eta,
+                    x_obs,
+                    theta_star,
+                    directional_constraints,
+                    delta_eta,
+                )
+                return likelihood + prior_density + constraint_density
+
+            for k in range(dtheta):
+                proposed_kappa_z = kappa_z.copy()
+                proposed_kappa_z[k] = kappa_priors[k].propose_kappa_field(
+                    k, kappa_z[k], x_obs, mh_scale_kappa[k]
+                )
+                current_logpost = joint_log_posterior(kappa_z)
+                proposed_logpost = joint_log_posterior(proposed_kappa_z)
+                if not np.isfinite(current_logpost):
+                    accepted = np.isfinite(proposed_logpost)
+                elif not np.isfinite(proposed_logpost):
+                    accepted = False
+                else:
+                    accepted = (
+                        np.log(np.random.rand())
+                        < proposed_logpost - current_logpost
+                    )
+                if accepted:
+                    kappa_z = proposed_kappa_z
+                accept_kappa[k] += accepted
+                accept_trace[k].append(accepted)
+        else:
+            for k in range(dtheta):
+                kappa_z, acc = kappa_priors[k].sample_kappa_field(
+                    k,
+                    kappa_z,
+                    delta_eta,
+                    theta_fixed,
+                    x_obs,
+                    y_obs,
+                    gp_eta,
+                    sigma2,
+                    mh_scale_kappa[k]
+                )
+                accept_kappa[k] += acc
+                accept_trace[k].append(acc)
 
             # kappa_theta[k] -= np.mean(kappa_theta[k])
 
@@ -762,7 +945,9 @@ def main():
                 k=k,
                 z=kappa_z[k],
                 x_obs=x_obs,
-                mh_scales=mh_scales,
+                mh_scales=kappa_priors[k].config.get(
+                    "hyperparameter_step_sizes", mh_scales
+                ),
                 allow_singular_cov=calibration_settings['allow_singular_cov']
             )
 
@@ -795,15 +980,55 @@ def main():
         # orthogonalize delta_eta with respect to the sensitivities G
 
         if orthogonalization_settings['orthogonalize_delta_eta']:
-            delta_eta=orthogonalize_delta_eta(delta_eta_raw, G)
+            proposed_delta_eta = orthogonalize_delta_eta(delta_eta_raw, G)
         else:
-            delta_eta = delta_eta_raw
+            proposed_delta_eta = delta_eta_raw
+
+        if directional_constraints["enabled"]:
+            theta_base_obs = (
+                np.tile(theta_fixed, (No, 1))
+                if theta_fixed.ndim == 1
+                else theta_fixed
+            )
+            theta_star_obs = theta_base_obs + (W @ kappa_z).T
+            current_delta_score = monotonicity_log_penalty(
+                gp_eta,
+                x_obs,
+                theta_star_obs,
+                directional_constraints,
+                delta_eta,
+            )
+            delta_constraint_score = monotonicity_log_penalty(
+                gp_eta,
+                x_obs,
+                theta_star_obs,
+                directional_constraints,
+                proposed_delta_eta,
+            )
+            if not np.isfinite(current_delta_score):
+                accept_delta = np.isfinite(delta_constraint_score)
+            elif not np.isfinite(delta_constraint_score):
+                accept_delta = False
+            else:
+                # The field draw is from the unconstrained conditional
+                # posterior, so the MH correction is only the constraint
+                # log-density difference.
+                accept_delta = (
+                    np.log(np.random.rand())
+                    < delta_constraint_score - current_delta_score
+                )
+            if accept_delta:
+                delta_eta = proposed_delta_eta
+        else:
+            delta_eta = proposed_delta_eta
 
         delta_eta_prior.update_hyperparameters(
             k=None,
             z=delta_eta,
             x_obs=x_obs,
-            mh_scales=mh_scales,
+            mh_scales=delta_eta_prior.config.get(
+                "hyperparameter_step_sizes", mh_scales
+            ),
             allow_singular_cov=calibration_settings['allow_singular_cov']
         )
 

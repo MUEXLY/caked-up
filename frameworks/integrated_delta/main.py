@@ -8,9 +8,14 @@ from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C
 
 
-from plottingFuncts import *
-from functs import *
-from functs import _prior_for_kappa
+try:  # package import from the combined application
+    from .plottingFuncts import *
+    from .functs import *
+    from .functs import _prior_for_kappa
+except ImportError:  # direct execution by the GUI or HPC scripts
+    from plottingFuncts import *
+    from functs import *
+    from functs import _prior_for_kappa
 
 
 def _math_label(label):
@@ -111,6 +116,10 @@ def main(config_path="config.json"):
     calib_params = model_data[[col for col in model_data.columns if col.startswith('theta_')]]
 
     configured_theta_labels = label_settings.get("theta_labels", {})
+    theta_parameter_names = [
+        column.replace("theta_", "")
+        for column in calib_params.columns
+    ]
     theta_labels = []
     for index, column in enumerate(calib_params.columns):
         parameter_name = column.replace("theta_", "")
@@ -128,6 +137,42 @@ def main(config_path="config.json"):
             parameter_name,
         )
         theta_labels.append(configured_label)
+
+    model_output_columns = [
+        column for column in model_data.columns if column.startswith("y_")
+    ]
+    physical_theta_transforms = {
+        column.replace("theta_", ""): {
+            "offset": float(model_data[column].min()),
+            "scale": float(model_data[column].max() - model_data[column].min()),
+        }
+        for column in calib_params.columns
+    }
+    physical_observable_transforms = {
+        column.replace("y_", ""): {
+            "offset": float(model_data[column].mean()),
+            "scale": float(model_data[column].std()),
+        }
+        for column in model_output_columns
+    }
+    directional_constraints = compile_directional_constraints(
+        calibration_settings.get("physical_constraints"),
+        [column.replace("x_", "") for column in model_domain.columns],
+        theta_parameter_names,
+        [column.replace("y_", "") for column in model_output_columns],
+        parameter_transforms=physical_theta_transforms,
+        observable_transforms=physical_observable_transforms,
+    )
+    if directional_constraints["enabled"]:
+        constraint_count = (
+            len(directional_constraints["rules"])
+            + len(directional_constraints["boundary_rules"])
+            + len(directional_constraints["parameter_sign_rules"])
+        )
+        print(
+            f"Enabled {constraint_count} {directional_constraints['mode']} "
+            "physical constraint(s)."
+        )
     configured_app_labels = label_settings.get("application_domain_labels", {})
     app_labels = []
     for index, column in enumerate(model_domain.columns):
@@ -269,8 +314,11 @@ def main(config_path="config.json"):
 
     dtheta = theta_sim.shape[1]
     No = len(x_obs)
+    hyperprior_settings = config.get("hyperprior_settings", {})
     kappa_hyperpriors = build_kappa_hyperpriors(
-        validation_options.get("kappa_hyperpriors"),
+        hyperprior_settings.get(
+            "kappa_fields", validation_options.get("kappa_hyperpriors")
+        ),
         dtheta,
     )
 
@@ -339,21 +387,43 @@ def main(config_path="config.json"):
     # ============================================================
 
     delta = np.zeros((dtheta, No))
+    if directional_constraints["enabled"] and directional_constraints["mode"] == "hard":
+        print("Searching for a feasible starting state for hard constraints...")
+        delta = initialize_hard_constraint_state(
+            delta,
+            lambda fields: np.tile(theta_fixed, (No, 1)) + fields.T,
+            gp_eta,
+            x_obs,
+            directional_constraints,
+        )
+        print(
+            "Initialized discrepancy fields at a feasible hard-constraint "
+            f"state; correction norm={np.linalg.norm(delta):.4g}."
+        )
 
     # Initial hyperparameters for each δₖ
-    ell_delta = 0.3 * np.ones(dtheta)
-    var_delta = 0.05 * np.ones(dtheta)
+    ell_delta = np.array([
+        hyperprior_mean(prior["rho"]) for prior in kappa_hyperpriors
+    ])
+    var_delta = np.array([
+        hyperprior_square_mean(prior["sigma"]) for prior in kappa_hyperpriors
+    ])
 
     # Initial noise variance
     sigma2 = 0.02**2
 
     Nmcmc=calibration_settings["N_mcmc"]
-    mh_scale_delta=calibration_settings["mh_scale_delta_prior"]
+    mh_scale_delta=np.array([
+        prior["step_size"] for prior in kappa_hyperpriors
+    ])
 
-    mh_scales = {
-        "log_ell_delta": 0.1,
-        "log_var_delta": 0.1
-    }
+    mh_scales = [
+        {
+            "log_ell_delta": prior["hyperparameter_step_sizes"]["log_rho"],
+            "log_var_delta": prior["hyperparameter_step_sizes"]["log_sigma"],
+        }
+        for prior in kappa_hyperpriors
+    ]
 
     a_sigma = 2.0
     b_sigma = 0.5
@@ -384,8 +454,9 @@ def main(config_path="config.json"):
     burnin = calibration_settings["burn_in"]
     adapt_interval = 50
     target_accept = 0.35
-    mh_scale_delta = calibration_settings["mh_scale_delta_prior"]
-    # mh_scale_delta = 0.5  # initial guess
+    mh_scale_delta = np.array([
+        prior["step_size"] for prior in kappa_hyperpriors
+    ])
 
     # store scale history (optional)
     mh_scale_trace = []
@@ -412,7 +483,8 @@ def main(config_path="config.json"):
                 y_obs,
                 gp_eta,
                 sigma2,
-                mh_scale_delta
+                mh_scale_delta[k],
+                constraints=directional_constraints,
             )
             accept_delta[k] += acc
             accept_trace[k].append(acc)
@@ -421,18 +493,12 @@ def main(config_path="config.json"):
         if it < burnin and (it + 1) % adapt_interval == 0:
 
             # acceptance rate over last adapt_interval steps
-            recent_accept = accept_delta / (it + 1)
-
-            # average across delta dimensions
-            mean_accept = np.mean(recent_accept)
-
             # log-scale update (stable + standard)
             gamma = 0.05  # adaptation speed
-
-            mh_scale_delta *= np.exp(gamma * (mean_accept - target_accept))
-
-            print(f"[ADAPT] Iter {it+1}: mean accept = {mean_accept:.3f}")
-            print(f"[ADAPT] Updated mh_scale_delta = {mh_scale_delta:.4f}")
+            recent_accept = accept_delta / (it + 1)
+            mh_scale_delta *= np.exp(gamma * (recent_accept - target_accept))
+            print(f"[ADAPT] Iter {it+1}: acceptance = {recent_accept}")
+            print(f"[ADAPT] Updated field step sizes = {mh_scale_delta}")
 
 
         # ---- update δ hyperparameters ----
@@ -445,7 +511,7 @@ def main(config_path="config.json"):
                 x_obs,
                 prior_ell,
                 prior_var,
-                mh_scales,
+                mh_scales[k],
                 allow_singular_covariance=allow_singular_covariance
             )
 
@@ -627,6 +693,18 @@ def main(config_path="config.json"):
     theta_post_std_phys = delta_std_phys
 
     external_validation = validation_options.get("external_validation", {})
+    configured_parameter_columns = external_validation.get("parameter_columns", {})
+    if (
+        external_validation.get("enabled", False)
+        and len(configured_parameter_columns) != len(theta_cols)
+    ):
+        print(
+            "Skipping external validation: configured parameter_columns has "
+            f"{len(configured_parameter_columns)} fields, but the loaded model "
+            f"has {len(theta_cols)} calibrated theta fields ({theta_cols}). "
+            "Match the CSV parameter mapping to the loaded calibration fields."
+        )
+        external_validation = {}
     if external_validation.get("enabled", False):
         external_data = pd.read_csv(external_validation["csv_path"])
         parameter_mapping = external_validation["parameter_columns"]
@@ -654,6 +732,12 @@ def main(config_path="config.json"):
         external_theta_phys = external_data[
             list(parameter_mapping.values())
         ].to_numpy(dtype=float)
+        if external_theta_phys.shape[1] != theta_min.size:
+            raise ValueError(
+                "External validation parameter mapping must match the number "
+                f"of calibrated theta fields ({theta_min.size}); got "
+                f"{external_theta_phys.shape[1]} columns."
+            )
         external_theta_normalized = (
             external_theta_phys - theta_min
         ) / theta_range
@@ -754,10 +838,23 @@ def main(config_path="config.json"):
             burn_in=validation_options.get(
                 'holdout_burn_in', max(250, burnin // 2)
             ),
-            mh_scale_delta=calibration_settings["mh_scale_delta_prior"],
+            mh_scale_delta=calibration_settings.get("mh_scale_delta_prior", 0.15),
             allow_singular_covariance=allow_singular_covariance,
             random_state=validation_options.get('random_seed', 0),
             kappa_hyperpriors=kappa_hyperpriors,
+            physical_constraints=calibration_settings.get("physical_constraints"),
+            domain_labels=[
+                column.replace("x_", "")
+                for column in model_domain.columns
+            ],
+            parameter_labels=theta_parameter_names,
+            observable_labels=[
+                column.replace("y_", "")
+                for column in model_data.columns
+                if column.startswith("y_")
+            ],
+            parameter_transforms=physical_theta_transforms,
+            observable_transforms=physical_observable_transforms,
         )
         full_scale = np.ptp(y_obs_phys)
         full_scale = full_scale if full_scale > 0 else 1.0
@@ -826,9 +923,22 @@ def main(config_path="config.json"):
                 "kappa_hyperprior_burn_in",
                 max(250, burnin // 2),
             ),
-            mh_scale_delta=calibration_settings["mh_scale_delta_prior"],
+            mh_scale_delta=calibration_settings.get("mh_scale_delta_prior", 0.15),
             allow_singular_covariance=allow_singular_covariance,
             random_state=validation_options.get("random_seed", 0),
+            physical_constraints=calibration_settings.get("physical_constraints"),
+            domain_labels=[
+                column.replace("x_", "")
+                for column in model_domain.columns
+            ],
+            parameter_labels=theta_parameter_names,
+            observable_labels=[
+                column.replace("y_", "")
+                for column in model_data.columns
+                if column.startswith("y_")
+            ],
+            parameter_transforms=physical_theta_transforms,
+            observable_transforms=physical_observable_transforms,
         )
         plot_kappa_hyperprior_sensitivity(
             hyperprior_metrics,
