@@ -32,6 +32,25 @@ def compile_directional_constraints(
         "inputparam": [str(label) for label in parameter_labels],
         "observable": [str(label) for label in observable_labels],
     }
+
+    def resolve_label(label, kind):
+        """Accept both GUI labels and raw dataframe column prefixes."""
+        name = str(label)
+        if name in label_sets[kind]:
+            return name
+        prefixes = {
+            "appdomain": ("x_",),
+            "inputparam": ("theta_", "param_"),
+            "observable": ("y_", "zeta_"),
+        }[kind]
+        candidate = name
+        while candidate not in label_sets[kind]:
+            prefix = next((item for item in prefixes if candidate.startswith(item)), None)
+            if prefix is None:
+                break
+            candidate = candidate[len(prefix):]
+        return candidate if candidate in label_sets[kind] else None
+
     rules = []
     for number, rule in enumerate(config.get("relationships", []), start=1):
         if not isinstance(rule, dict):
@@ -45,7 +64,8 @@ def compile_directional_constraints(
         predictor_name = str(rule.get("predictor", ""))
         response_type = str(rule.get("response_type", "observable")).lower()
         response_name = str(rule.get("response", rule.get("observable", "")))
-        if predictor_name not in label_sets[predictor_type]:
+        canonical_predictor = resolve_label(predictor_name, predictor_type)
+        if canonical_predictor is None:
             raise ValueError(
                 f"Physical constraint row {number} references unknown "
                 f"{predictor_type} variable {predictor_name!r}; available: "
@@ -56,13 +76,14 @@ def compile_directional_constraints(
                 f"Physical constraint row {number}: response_type must be "
                 "'appdomain', 'inputparam', or 'observable'"
             )
-        if response_name not in label_sets[response_type]:
+        canonical_response = resolve_label(response_name, response_type)
+        if canonical_response is None:
             raise ValueError(
                 f"Physical constraint row {number} references unknown "
                 f"{response_type} response {response_name!r}; available: "
                 f"{label_sets[response_type]}"
             )
-        if predictor_type == response_type and predictor_name == response_name:
+        if predictor_type == response_type and canonical_predictor == canonical_response:
             raise ValueError(
                 f"Physical constraint row {number} cannot relate a variable to itself"
             )
@@ -74,9 +95,9 @@ def compile_directional_constraints(
             )
         rules.append({
             "predictor_type": predictor_type,
-            "predictor_index": label_sets[predictor_type].index(predictor_name),
+            "predictor_index": label_sets[predictor_type].index(canonical_predictor),
             "response_type": response_type,
-            "response_index": label_sets[response_type].index(response_name),
+            "response_index": label_sets[response_type].index(canonical_response),
             "direction": direction,
         })
 
@@ -88,23 +109,24 @@ def compile_directional_constraints(
         if not isinstance(rule, dict):
             raise ValueError(f"Parameter sign constraint row {number} must be an object")
         parameter_name = str(rule.get("parameter", ""))
-        if parameter_name not in label_sets["inputparam"]:
+        canonical_parameter = resolve_label(parameter_name, "inputparam")
+        if canonical_parameter is None:
             raise ValueError(
                 f"Parameter sign constraint row {number} references unknown input "
                 f"parameter {parameter_name!r}; available: {label_sets['inputparam']}"
             )
-        if parameter_name in seen_sign_parameters:
+        if canonical_parameter in seen_sign_parameters:
             raise ValueError(
-                f"Input parameter {parameter_name!r} has more than one sign constraint"
+                f"Input parameter {canonical_parameter!r} has more than one sign constraint"
             )
-        seen_sign_parameters.add(parameter_name)
+        seen_sign_parameters.add(canonical_parameter)
         sign = str(rule.get("sign", "")).lower()
         if sign not in {"positive", "negative"}:
             raise ValueError(
                 f"Parameter sign constraint row {number} sign must be "
                 "'positive' or 'negative'"
             )
-        transform = parameter_transforms.get(parameter_name)
+        transform = parameter_transforms.get(canonical_parameter)
         if transform is None:
             raise ValueError(
                 f"No normalization information is available for parameter "
@@ -116,8 +138,8 @@ def compile_directional_constraints(
                 f"Parameter {parameter_name!r} has invalid normalization information"
             )
         parameter_sign_rules.append({
-            "parameter_index": label_sets["inputparam"].index(parameter_name),
-            "parameter_name": parameter_name,
+            "parameter_index": label_sets["inputparam"].index(canonical_parameter),
+            "parameter_name": canonical_parameter,
             "sign": sign,
             "offset": offset,
             "scale": scale,
@@ -128,7 +150,8 @@ def compile_directional_constraints(
         if not isinstance(rule, dict):
             raise ValueError(f"Boundary constraint row {number} must be an object")
         domain_name = str(rule.get("domain", ""))
-        if domain_name not in label_sets["appdomain"]:
+        canonical_domain = resolve_label(domain_name, "appdomain")
+        if canonical_domain is None:
             raise ValueError(
                 f"Boundary constraint row {number} references unknown application "
                 f"domain {domain_name!r}; available: {label_sets['appdomain']}"
@@ -146,7 +169,8 @@ def compile_directional_constraints(
                 "'inputparam' or 'observable'"
             )
         target_name = str(rule.get("target", ""))
-        if target_name not in label_sets[target_type]:
+        canonical_target = resolve_label(target_name, target_type)
+        if canonical_target is None:
             raise ValueError(
                 f"Boundary constraint row {number} references unknown {target_type} "
                 f"target {target_name!r}; available: {label_sets[target_type]}"
@@ -166,7 +190,7 @@ def compile_directional_constraints(
         transform = (
             parameter_transforms if target_type == "inputparam"
             else observable_transforms
-        ).get(target_name)
+        ).get(canonical_target)
         if transform is None:
             raise ValueError(
                 f"No normalization information is available for boundary target "
@@ -178,11 +202,11 @@ def compile_directional_constraints(
                 f"Boundary target {target_name!r} has a zero or invalid normalization scale"
             )
         boundary_rules.append({
-            "domain_index": label_sets["appdomain"].index(domain_name),
+            "domain_index": label_sets["appdomain"].index(canonical_domain),
             "endpoint": endpoint,
             "target_type": target_type,
-            "target_index": label_sets[target_type].index(target_name),
-            "target_name": target_name,
+            "target_index": label_sets[target_type].index(canonical_target),
+            "target_name": canonical_target,
             "target_value": (target_value - offset) / scale,
             "tolerance": tolerance / abs(scale),
         })

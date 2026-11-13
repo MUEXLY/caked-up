@@ -1,21 +1,24 @@
 #!/bin/bash
-#SBATCH --job-name=calib_sweep
-#SBATCH --output=logs/out_%A_%a.txt
-#SBATCH --error=logs/err_%A_%a.txt
-#SBATCH --array=0-35
-#SBATCH --time=02:00:00
+# Template: run `python sweep.py` to generate a runnable array script with the
+# correct array range, manifest path, project path, and log directory.
+#SBATCH --job-name=cv_grid
+#SBATCH --array=__ARRAY_RANGE__
+#SBATCH --output=__LOG_DIR__/%x_%A_%a.out
+#SBATCH --error=__LOG_DIR__/%x_%A_%a.err
+#SBATCH --time=04:00:00
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=16G
 
-# activate environment
-source venv/bin/activate  # or
-# conda activate your_env  # or venv activation
+set -euo pipefail
 
-# config index from Slurm
-IDX=$SLURM_ARRAY_TASK_ID
+PROJECT_ROOT="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+MANIFEST="$PROJECT_ROOT/__MANIFEST_PATH__"
+cd "$PROJECT_ROOT"
 
-CONFIG=configs/config_$(printf "%04d" $IDX).json
+# Activate the repository environment when present. On clusters that use
+# modules or conda, add the site-specific setup below this comment.
+if [[ -f "$PROJECT_ROOT/venv/bin/activate" ]]; then
+    source "$PROJECT_ROOT/venv/bin/activate"
+fi
 
-echo "Running config: $CONFIG"
-
-python3 main.py $CONFIG
+python run_sweep_task.py "$MANIFEST" "$SLURM_ARRAY_TASK_ID"

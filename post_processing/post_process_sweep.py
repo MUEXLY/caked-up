@@ -1,249 +1,159 @@
-import os
+"""Rank CV grid-search results by metric within each shrinkage-method group."""
+
+from __future__ import annotations
+
+import argparse
+import csv
 import json
-import math
-import matplotlib.pyplot as plt
-import matplotlib.image as mpimg
+import re
+from collections import defaultdict
+from pathlib import Path
 
 
-# -----------------------------
-# Formatting helpers
-# -----------------------------
-def format_prior(prior_dict):
-    """Compact formatting for prior dictionaries."""
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def load_json(path: Path) -> dict | None:
     try:
-        ell = prior_dict.get("ell", "NA")
-        var = prior_dict.get("var", "NA")
-        return f"(ℓ={ell}, σ²={var})"
-    except Exception:
-        return "N/A"
-
-def load_loss(results_dir):
-    """Load cross-validation loss if available."""
-    loss_path = os.path.join(results_dir, "cross_validation_losses.json")
-
-    if not os.path.exists(loss_path):
+        with path.open("r", encoding="utf-8") as stream:
+            return json.load(stream)
+    except (OSError, json.JSONDecodeError):
         return None
 
-    try:
-        with open(loss_path, "r") as f:
-            data = json.load(f)
-        return data.get("net_loss", None)
-    except Exception:
+
+def infer_method_group(config: dict) -> str:
+    metadata = config.get("grid_search_metadata", {})
+    if metadata.get("method_group"):
+        return str(metadata["method_group"])
+    fields = config.get("hyperprior_settings", {}).get("kappa_fields", {})
+    methods = []
+    for name in sorted(fields, key=lambda item: int(re.search(r"\d+", item).group())):
+        method = fields[name].get("shrinkage_prior", "unknown")
+        methods.append(f"{name}-{method}")
+    return "_".join(methods) if methods else "unknown"
+
+
+def extract_run(loss_path: Path, metric: str) -> dict | None:
+    losses = load_json(loss_path)
+    if not isinstance(losses, dict):
         return None
+    run_dir = loss_path.parent
+    config = load_json(run_dir / "used_config.json") or load_json(run_dir / "config.json")
+    if not isinstance(config, dict):
+        return None
+    metadata = config.get("grid_search_metadata", {})
+    value = losses.get(metric)
+    if value is None and metric == "net_nrmse":
+        value = losses.get("y_nrmse")
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        value = None
+    return {
+        "study": metadata.get("study") or run_dir.parent.parent.name,
+        "method_group": infer_method_group(config),
+        "rank": None,
+        "run_name": run_dir.name,
+        "metric": metric,
+        "nrmse": value,
+        "net_nrmse": losses.get("net_nrmse"),
+        "y_nrmse": losses.get("y_nrmse"),
+        "theta_nrmse_total": losses.get("theta_nrmse_total"),
+        "delta_nrmse": losses.get("delta_nrmse"),
+        "holdout_y_nrmse": losses.get("holdout_y_nrmse"),
+        "candidate_ids": json.dumps(metadata.get("candidate_ids", {}), sort_keys=True),
+        "shared_constraints_sha256": metadata.get("shared_constraints_sha256", ""),
+        "results_path": str(run_dir.resolve()),
+    }
 
-def extract_label(config, config_dir, text_keys, loss=None):
-    """Extract formatted label text from config."""
-    lines = [config_dir]
 
-    for key_tuple in text_keys:
-        val = config
-        try:
-            for k in key_tuple:
-                val = val[k]
-
-            if key_tuple[-1] == "kappa_prior_vals":
-                lines.append(f"κ: {format_prior(val)}")
-            elif key_tuple[-1] == "delta_eta_prior_vals":
-                lines.append(f"η: {format_prior(val)}")
-            else:
-                lines.append(f"{key_tuple[-1]}: {val}")
-
-        except KeyError:
-            lines.append(f"{key_tuple[-1]}: N/A")
-
-    if loss is not None:
-        lines.append(f"Loss: {loss:.3f}")
-    else:
-        lines.append("Loss: N/A")
-
-    return "\n".join(lines)
+def write_csv(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fields = [
+        "study", "method_group", "rank", "run_name", "metric", "nrmse",
+        "net_nrmse", "y_nrmse", "theta_nrmse_total", "delta_nrmse",
+        "holdout_y_nrmse", "candidate_ids", "shared_constraints_sha256", "results_path",
+    ]
+    with path.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
 
 
-# -----------------------------
-# Core plotting function
-# -----------------------------
-def create_figure_grid(
-    config_dirs,
-    base_directory,
-    figure_rel_path,
-    config_filename,
-    text_keys,
-    ncols=4,
-    figsize=(12, 10),
-    dpi=100,
-    output_path="grid.png"
-):
-    """Create a single grid image from a subset of config directories."""
-
-    # -----------------------------
-# First pass: collect valid entries
-# -----------------------------
-    losses = []
-    valid_entries = []
-
-    for config_dir in config_dirs:
-        full_dir = os.path.join(base_directory, config_dir)
-
-        fig_path = os.path.join(full_dir, figure_rel_path)
-        config_path = os.path.join(full_dir, config_filename)
-
-        if not os.path.exists(fig_path) or not os.path.exists(config_path):
-            continue
-
-        loss = load_loss(full_dir)
-
-        valid_entries.append((config_dir, full_dir, fig_path, config_path, loss))
-        losses.append(loss if loss is not None else float("inf"))
-
-    # -----------------------------
-    # NOW compute grid size
-    # -----------------------------
-    n_images = len(valid_entries)
-
-    if n_images == 0:
-        print("No valid images to plot.")
+def create_study_plots(rows: list[dict], output_dir: Path) -> None:
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("matplotlib unavailable; CSV ranking files were still generated")
         return
 
-    nrows = math.ceil(n_images / ncols)
-
-    fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
-
-    # Robust flatten
-    if isinstance(axes, (list, tuple)):
-        axes = list(axes)
-    else:
-        axes = axes.flatten() if hasattr(axes, "flatten") else [axes]
-
-    # Initialize plot index
-    plot_idx = 0
-
-    # Determine best (lowest loss)
-    best_idx = None
-    if len(losses) > 0:
-        best_idx = int(min(range(len(losses)), key=lambda i: losses[i]))
-
-    # -----------------------------
-    # Plotting loop (ALWAYS runs)
-    # -----------------------------
-    for i, (config_dir, full_dir, fig_path, config_path, loss) in enumerate(valid_entries):
-        try:
-            if plot_idx >= len(axes):
-                print("Warning: more images than axes, skipping remaining.")
-                break
-
-            img = mpimg.imread(fig_path)[::2, ::2]
-
-            with open(config_path, "r") as f:
-                config = json.load(f)
-
-            label_text = extract_label(config, config_dir, text_keys, loss=loss)
-
-            ax = axes[plot_idx]
-            ax.imshow(img)
-            ax.axis("off")
-
-            ax.set_title(label_text, fontsize=6)
-
-            # Highlight best
-            if best_idx is not None and i == best_idx:
-                for spine in ax.spines.values():
-                    spine.set_edgecolor("red")
-                    spine.set_linewidth(3)
-
-            plot_idx += 1
-
-        except Exception as e:
-            print(f"Error processing {config_dir}: {e}")
-            continue
-
-    # Turn off unused axes
-    for j in range(plot_idx, len(axes)):
-        axes[j].axis("off")
-
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=dpi)
-    plt.close()
-
-    print(f"Saved grid figure to {output_path}")
+    by_study: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        if row["nrmse"] is not None and row["rank"] == 1:
+            by_study[row["study"]].append(row)
+    for study, best_rows in by_study.items():
+        best_rows.sort(key=lambda row: row["nrmse"])
+        fig_height = max(4.5, 0.35 * len(best_rows))
+        fig, ax = plt.subplots(figsize=(12, fig_height))
+        names = [row["method_group"].replace("_", "\n", 1) for row in best_rows]
+        values = [row["nrmse"] for row in best_rows]
+        bars = ax.barh(names, values, color="#4472a8")
+        ax.invert_yaxis()
+        ax.set_xlabel("net_nrmse (lower is better)")
+        ax.set_title(f"{study}: best hyperprior setting by kappa method combination")
+        for bar, value in zip(bars, values):
+            ax.text(value, bar.get_y() + bar.get_height() / 2, f" {value:.4g}", va="center")
+        fig.tight_layout()
+        fig.savefig(output_dir / f"best_methods_{study}.png", dpi=160)
+        plt.close(fig)
 
 
-# -----------------------------
-# Chunking wrapper
-# -----------------------------
-def create_chunked_grids(
-    base_directory,
-    figure_rel_path="figures/discrepancy_diagnostics_realspace.png",
-    config_filename="used_config.json",
-    text_keys=[
-        ("calibration_settings", "kappa_prior_vals"),
-        ("calibration_settings", "delta_eta_prior_vals"),
-    ],
-    chunk_size=16,
-    ncols=4,
-    figsize=(12, 10),
-    dpi=100,
-):
-    """Split configs into multiple grids for readability and memory safety."""
-
-    config_dirs = sorted([
-    d for d in os.listdir(base_directory)
-    if os.path.isdir(os.path.join(base_directory, d))])
-
-    config_dirs = sorted(
-    config_dirs,
-    key=lambda d: load_loss(os.path.join(base_directory, d)) or float("inf"))
-
-    if len(config_dirs) == 0:
-        print("No config directories found.")
-        return
-
-    print(f"Found {len(config_dirs)} configs")
-
-    # OPTIONAL: sort by metric (customize later)
-    # config_dirs = sorted(config_dirs, key=lambda d: some_metric(d))
-
-    for i in range(0, len(config_dirs), chunk_size):
-        subset = config_dirs[i:i + chunk_size]
-
-        output_path = os.path.join(
-            base_directory,
-            f"grid_{i // chunk_size:03d}.png"
-        )
-
-        print(f"Processing chunk {i // chunk_size}: {len(subset)} configs")
-
-        create_figure_grid(
-            config_dirs=subset,
-            base_directory=base_directory,
-            figure_rel_path=figure_rel_path,
-            config_filename=config_filename,
-            text_keys=text_keys,
-            ncols=ncols,
-            figsize=figsize,
-            dpi=dpi,
-            output_path=output_path
-        )
-
-
-# -----------------------------
-# Entry point
-# -----------------------------
-def main():
-    base_directory = "./results/sweep/"
-
-    create_chunked_grids(
-        base_directory=base_directory,
-        figure_rel_path="figures/posterior_predictive_check_physical.png",
-        config_filename="used_config.json",
-        text_keys=[
-            ("calibration_settings", "kappa_prior_vals"),
-            ("calibration_settings", "delta_eta_prior_vals"),
-        ],
-        chunk_size=16,     # 🔑 key parameter
-        ncols=4,
-        figsize=(12, 10),
-        dpi=100
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--results-root",
+        default=str(ROOT / "results" / "cv_grid_search"),
+        help="Root containing the study/method/run result hierarchy",
     )
+    parser.add_argument(
+        "--metric",
+        default="net_nrmse",
+        choices=("net_nrmse", "y_nrmse", "theta_nrmse_total", "delta_nrmse"),
+        help="Metric used to rank within each study and method group",
+    )
+    args = parser.parse_args()
+    results_root = Path(args.results_root).expanduser().resolve()
+    output_dir = results_root / "postprocessed"
+    loss_paths = sorted(results_root.rglob("cross_validation_losses.json"))
+    rows = [row for path in loss_paths if (row := extract_run(path, args.metric)) is not None]
+    if not rows:
+        raise SystemExit(f"No completed cross-validation results found under {results_root}")
+
+    grouped: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for row in rows:
+        grouped[(row["study"], row["method_group"])].append(row)
+    for group_rows in grouped.values():
+        group_rows.sort(key=lambda row: float("inf") if row["nrmse"] is None else row["nrmse"])
+        for rank, row in enumerate(group_rows, start=1):
+            row["rank"] = rank
+
+    rows.sort(key=lambda row: (row["study"], row["method_group"], row["rank"]))
+    write_csv(output_dir / "ranked_runs.csv", rows)
+    best_rows = [row for row in rows if row["rank"] == 1 and row["nrmse"] is not None]
+    best_rows.sort(key=lambda row: (row["study"], row["nrmse"]))
+    write_csv(output_dir / "best_by_method.csv", best_rows)
+    create_study_plots(rows, output_dir)
+
+    print(f"Ranked {len(rows)} completed runs by {args.metric} within study/method groups.")
+    print(f"Full ranking: {output_dir / 'ranked_runs.csv'}")
+    print(f"Best settings per method group: {output_dir / 'best_by_method.csv'}")
+    for row in best_rows:
+        print(
+            f"{row['study']} | {row['method_group']} | "
+            f"{args.metric}={row['nrmse']:.6g} | {row['run_name']}"
+        )
 
 
 if __name__ == "__main__":
