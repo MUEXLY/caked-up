@@ -1,0 +1,125 @@
+{
+  "base_config": "config.json",
+  "output_root": "results/cv_grid_search",
+  "generated_config_root": "configs/grid_search",
+  "array_concurrency": 16,
+  "disable_figures": true,
+  "shared_physical_constraints": "from_base_config",
+  "studies": {
+    "study1": {
+      "overrides": {
+        "input_settings": {
+          "model_data_path": "studyNo1/modelData",
+          "obs_data_path": "studyNo1/observationData",
+          "input_delimiter": ","
+        },
+        "cross_validation_settings": {
+          "conduct_cross_validation": true,
+          "known_theta_form": "constant",
+          "known_theta_form_params": {
+            "constant": {
+              "values": [1.5, 1.75]
+            }
+          },
+          "known_delta_form": "trig_funct",
+          "known_delta_form_params": {
+            "trig_funct": {
+              "function": ["cos"]
+            }
+          }
+        }
+      }
+    },
+    "study2": {
+      "overrides": {
+        "input_settings": {
+          "model_data_path": "studyNo2/modelData",
+          "obs_data_path": "studyNo2/observationData",
+          "input_delimiter": ","
+        },
+        "cross_validation_settings": {
+          "conduct_cross_validation": true,
+          "known_theta_form": "trig_funct",
+          "known_theta_form_params": {
+            "trig_funct": {
+              "functions": ["sin", "cos"]
+            }
+          },
+          "known_delta_form": null
+        }
+      }
+    }
+  },
+  "kappa_hyperprior_grid": {
+    "gp": [
+      {
+        "id": "gp_short_lowvar",
+        "settings": {
+          "ell_prior": {"mu": -0.5, "sigma": 0.3},
+          "var_prior": {"mu": -2.0, "sigma": 0.5}
+        }
+      },
+      {
+        "id": "gp_long_midvar",
+        "settings": {
+          "ell_prior": {"mu": 0.2, "sigma": 0.3},
+          "var_prior": {"mu": -0.7, "sigma": 0.5}
+        }
+      }
+    ],
+    "lasso": [
+      {
+        "id": "lasso_weak",
+        "settings": {"lambda_prior": {"shape": 2.0, "rate": 4.0}}
+      },
+      {
+        "id": "lasso_strong",
+        "settings": {"lambda_prior": {"shape": 2.0, "rate": 1.0}}
+      }
+    ],
+    "fused_lasso": [
+      {
+        "id": "fused_weak",
+        "settings": {"lambda_prior": {"shape": 2.0, "rate": 4.0}}
+      },
+      {
+        "id": "fused_strong",
+        "settings": {"lambda_prior": {"shape": 2.0, "rate": 1.0}}
+      }
+    ],
+    "spike_slab": [
+      {
+        "id": "spike_sparse",
+        "settings": {
+          "pi_prior": {"alpha": 1.0, "beta": 9.0},
+          "sigma_spike": 0.1,
+          "sigma_slab": 1.0
+        }
+      },
+      {
+        "id": "spike_less_sparse",
+        "settings": {
+          "pi_prior": {"alpha": 4.0, "beta": 1.0},
+          "sigma_spike": 0.3,
+          "sigma_slab": 1.5
+        }
+      }
+    ]
+  },
+  "delta_eta_gp_grid": [
+    {
+      "id": "delta_short_lowvar",
+      "settings": {
+        "ell_prior": {"mu": -0.5, "sigma": 0.3},
+        "var_prior": {"mu": -2.0, "sigma": 0.5}
+      }
+    },
+    {
+      "id": "delta_long_midvar",
+      "settings": {
+        "ell_prior": {"mu": 0.2, "sigma": 0.3},
+        "var_prior": {"mu": -0.7, "sigma": 0.5}
+      }
+    }
+  ]
+}
