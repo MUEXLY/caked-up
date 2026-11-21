@@ -478,6 +478,28 @@ Typical outputs include:
 - Sensitivity analysis figures
 - Hyperparameter sweep summaries
 
+## Overlay posterior predictions from multiple runs
+
+Use `post_processing/plot_consolidated_results.py` to compare physical-space
+posterior predictions from several calibration result directories. Repeat
+`--run` once per result directory and provide the legend label after the path:
+
+```bash
+python post_processing/plot_consolidated_results.py \
+  --run gui_runs/run_a/results "Baseline" \
+  --run gui_runs/run_b/results "Alternative prior" \
+  --output post_processing/comparison.png
+```
+
+The consolidated figure has panels for the previous emulator, posterior
+prediction, delta correction, and each kappa field. Curves and 95% intervals
+(`mean ± 1.96 × std`) use a distinct color per run. The legend includes the
+provided run label, saved NRMSE, and a summary of the prescribed hyperpriors.
+For archives with multiple application-domain or observation columns, select
+the arrays with `--x-key` and `--observation-key`. Axis titles can be changed
+with `--x-label`, `--emulator-y-label`, `--posterior-y-label`, `--delta-y-label`,
+and `--kappa-y-label`.
+
 ---
 
 # Recommended Workflow
