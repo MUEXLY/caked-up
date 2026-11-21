@@ -491,10 +491,15 @@ python post_processing/plot_consolidated_results.py \
   --output post_processing/comparison.png
 ```
 
-The consolidated figure has panels for the previous emulator, posterior
-prediction, delta correction, and each kappa field. Curves and 95% intervals
-(`mean ± 1.96 × std`) use a distinct color per run. The legend includes the
-provided run label, saved NRMSE, and a summary of the prescribed hyperpriors.
+The consolidated figure uses the same publication-style layout as
+`posterior_predictive_check_physical.png`: emulator prior and additive
+discrepancy panels across the top, full-width kappa fields, and the full
+posterior prediction on the bottom. A dedicated hyperprior panel plots the
+prescribed distributions for GP, lasso, fused-lasso, horseshoe, and spike-slab
+priors. Curves and 95% intervals (`mean ± 1.96 × std`) use a distinct color per
+run. Cross-validation known forms are overlaid, and holdout observations,
+predictions, and intervals are included when saved. The run legend contains
+only the provided label and its saved NRMSE.
 For archives with multiple application-domain or observation columns, select
 the arrays with `--x-key` and `--observation-key`. Axis titles can be changed
 with `--x-label`, `--emulator-y-label`, `--posterior-y-label`, `--delta-y-label`,

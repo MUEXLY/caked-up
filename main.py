@@ -1683,7 +1683,12 @@ def main():
 
     if results_options['output_physical_results']:
         print(f'Saving physical results to {results_path}...')
-        np.savez(os.path.join(results_path, "results_physical.npz"), **results_physical)
+        physical_archive = {
+            **{key: np.asarray(values) for key, values in results_physical.items()},
+            "theta_fixed_physical": np.asarray(theta_fixed_phys_arr).ravel(),
+            "theta_fixed_normalized": np.asarray(theta_fixed_arr).ravel(),
+        }
+        np.savez(os.path.join(results_path, "results_physical.npz"), **physical_archive)
         print(f"Saved physical results to {os.path.join(results_path, 'results_physical.npz')}")
 
     # if evaluating against holdout data, interpolate the kappa and delta fields to the holdout x values and save the results to a separate file
@@ -1765,6 +1770,21 @@ def main():
             "kappa_holdout": kappa_holdout * (theta_max - theta_min),  # scale to physical units
             "delta_holdout": delta_holdout * y_sd  # scale to physical units
         }
+
+        physical_archive_path = os.path.join(results_path, "results_physical.npz")
+        with np.load(physical_archive_path) as physical_archive:
+            physical_archive_data = {
+                key: physical_archive[key]
+                for key in physical_archive.files
+            }
+        for key, value in holdout_results_physical.items():
+            if key == "x":
+                physical_archive_data["x_holdout"] = np.asarray(value)
+            elif key == "y":
+                physical_archive_data["y_holdout"] = np.asarray(value)
+            elif key in {"y_holdout_post_mean", "y_holdout_post_std", "y_holdout_post_var"}:
+                physical_archive_data[key] = np.asarray(value)
+        np.savez(physical_archive_path, **physical_archive_data)
 
 
 
