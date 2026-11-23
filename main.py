@@ -34,6 +34,13 @@ def main():
     with open(config_path, "r") as f:
         config = json.load(f)
 
+    random_seed = config.get(
+        "random_seed",
+        config["calibration_settings"].get("random_seed"),
+    )
+    if random_seed is not None:
+        np.random.seed(int(random_seed))
+
     # Backward compatibility for configs created before delta_eta was moved
     # into the dedicated hyperprior settings group.
     hyperprior_settings = config.setdefault("hyperprior_settings", {})

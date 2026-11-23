@@ -1,5 +1,7 @@
 {
   "base_config": "config.json",
+  "repeats": 3,
+  "base_seed": 42000,
   "output_root": "results/orthogonality_sensitivity",
   "generated_config_root": "configs/orthogonality_sensitivity",
   "array_concurrency": 4,

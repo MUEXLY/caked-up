@@ -5,7 +5,7 @@
 #SBATCH --output=__LOG_DIR__/%x_%A_%a.out
 #SBATCH --error=__LOG_DIR__/%x_%A_%a.err
 #SBATCH --time=04:00:00
-#SBATCH --cpus-per-task=1
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=16G
 
 set -euo pipefail
@@ -14,7 +14,7 @@ PROJECT_ROOT="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." &&
 MANIFEST="$PROJECT_ROOT/__MANIFEST_PATH__"
 cd "$PROJECT_ROOT"
 
-if [[ -f "$PROJECT_ROOT/venv/bin/activate ]]; then
+if [[ -f "$PROJECT_ROOT/venv/bin/activate" ]]; then
     source "$PROJECT_ROOT/venv/bin/activate"
 fi
 

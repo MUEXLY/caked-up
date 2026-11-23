@@ -94,6 +94,11 @@ def main() -> None:
     output_root.mkdir(parents=True, exist_ok=True)
     (output_root / "logs").mkdir(parents=True, exist_ok=True)
 
+    repeats = int(sweep.get("repeats", 3))
+    if repeats < 1:
+        raise ValueError("repeats must be a positive integer")
+    base_seed = int(sweep.get("base_seed", 42000))
+
     jobs = []
     for study_name, study in studies.items():
         if not isinstance(study, dict):
@@ -116,42 +121,50 @@ def main() -> None:
                     figure_options[key] = False
 
         for case in normalized_cases:
-            config = copy.deepcopy(base)
-            orthogonalization = config.setdefault("calibration_settings", {}).setdefault(
-                "orthogonalization_settings", {}
-            )
-            orthogonalization["orthogonalize_kappa"] = case["orthogonalize_kappa"]
-            orthogonalization["orthogonalize_delta_eta"] = case["orthogonalize_delta_eta"]
+            for repeat in range(1, repeats + 1):
+                config = copy.deepcopy(base)
+                seed = base_seed + len(jobs)
+                config["random_seed"] = seed
+                config["calibration_settings"]["random_seed"] = seed
+                orthogonalization = config.setdefault(
+                    "calibration_settings", {}
+                ).setdefault("orthogonalization_settings", {})
+                orthogonalization["orthogonalize_kappa"] = case["orthogonalize_kappa"]
+                orthogonalization["orthogonalize_delta_eta"] = case["orthogonalize_delta_eta"]
 
-            run_name = safe_name(case["id"])
-            result_dir = output_root / study_name / run_name
-            config_path = config_root / study_name / f"{run_name}.json"
-            config_path.parent.mkdir(parents=True, exist_ok=True)
+                run_name = safe_name(case["id"])
+                result_dir = output_root / study_name / f"{run_name}_repeat_{repeat:02d}"
+                config_path = config_root / study_name / f"{run_name}_repeat_{repeat:02d}.json"
+                config_path.parent.mkdir(parents=True, exist_ok=True)
 
-            config.setdefault("output_settings", {})["results_path"] = str(
-                result_dir.relative_to(ROOT)
-            )
-            config["output_settings"]["figures_path"] = str(
-                (result_dir / "figures").relative_to(ROOT)
-            )
-            config["orthogonality_sensitivity_metadata"] = {
-                "study": study_name,
-                "case": case["id"],
-                "label": case["label"],
-                "orthogonalize_kappa": case["orthogonalize_kappa"],
-                "orthogonalize_delta_eta": case["orthogonalize_delta_eta"],
-            }
-            config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
-            jobs.append({
-                "index": len(jobs),
-                "study": study_name,
-                "case": case["id"],
-                "label": case["label"],
-                "orthogonalize_kappa": case["orthogonalize_kappa"],
-                "orthogonalize_delta_eta": case["orthogonalize_delta_eta"],
-                "config_path": str(config_path.relative_to(ROOT)),
-                "results_path": str(result_dir.relative_to(ROOT)),
-            })
+                config.setdefault("output_settings", {})["results_path"] = str(
+                    result_dir.relative_to(ROOT)
+                )
+                config["output_settings"]["figures_path"] = str(
+                    (result_dir / "figures").relative_to(ROOT)
+                )
+                config["orthogonality_sensitivity_metadata"] = {
+                    "study": study_name,
+                    "case": case["id"],
+                    "label": case["label"],
+                    "repeat": repeat,
+                    "seed": seed,
+                    "orthogonalize_kappa": case["orthogonalize_kappa"],
+                    "orthogonalize_delta_eta": case["orthogonalize_delta_eta"],
+                }
+                config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+                jobs.append({
+                    "index": len(jobs),
+                    "study": study_name,
+                    "case": case["id"],
+                    "label": case["label"],
+                    "repeat": repeat,
+                    "seed": seed,
+                    "orthogonalize_kappa": case["orthogonalize_kappa"],
+                    "orthogonalize_delta_eta": case["orthogonalize_delta_eta"],
+                    "config_path": str(config_path.relative_to(ROOT)),
+                    "results_path": str(result_dir.relative_to(ROOT)),
+                })
 
     manifest_path = config_root / "manifest.json"
     manifest = {
@@ -159,6 +172,8 @@ def main() -> None:
         "project_root": "../..",
         "results_root": str(output_root.relative_to(ROOT)),
         "job_count": len(jobs),
+        "repeats": repeats,
+        "base_seed": base_seed,
         "jobs": jobs,
     }
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")

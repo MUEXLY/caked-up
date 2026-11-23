@@ -32,9 +32,16 @@ def main() -> None:
     if not config_path.is_absolute():
         config_path = project_root / config_path
     config_path = config_path.resolve()
+    detail = f"study={job.get('study', 'unknown')}"
+    if "method_group" in job:
+        detail += f" methods={job['method_group']}"
+    if "case" in job:
+        detail += f" case={job['case']}"
+    if "repeat" in job:
+        detail += f" repeat={job['repeat']}"
     print(
         f"Starting job {index + 1}/{len(jobs)}: "
-        f"study={job['study']} methods={job['method_group']} config={config_path}",
+        f"{detail} config={config_path}",
         flush=True,
     )
     subprocess.run(
