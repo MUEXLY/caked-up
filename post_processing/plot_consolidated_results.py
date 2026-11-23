@@ -130,7 +130,7 @@ def hyperprior_distributions(config: dict) -> list[dict]:
             specifications.extend([
                 {"label": rf"$\ell$ ({field_name})", "kind": "lognormal",
                  "params": gp.get("ell_prior", {})},
-                {"label": rf"$v$ ({field_name})", "kind": "lognormal",
+                {"label": rf"$\sigma$ ({field_name})", "kind": "lognormal",
                  "params": gp.get("var_prior", {})},
             ])
 
@@ -140,7 +140,7 @@ def hyperprior_distributions(config: dict) -> list[dict]:
         specifications.extend([
             {"label": r"$\ell$ ($\delta_\eta$)", "kind": "lognormal",
              "params": delta_gp.get("ell_prior", {})},
-            {"label": r"$v$ ($\delta_\eta$)", "kind": "lognormal",
+            {"label": r"$\sigma$ ($\delta_\eta$)", "kind": "lognormal",
              "params": delta_gp.get("var_prior", {})},
         ])
     return specifications
@@ -174,8 +174,15 @@ HYPERPRIOR_COLORS = {
     "fused_lasso": "#E69F00",
     "spike_slab": "#D55E00",
     "horseshoe": "#CC79A7",
-    "gp": "#56B4E9",
+    "gp_ell": "#56B4E9",
+    "gp_sigma": "#009E73",
 }
+
+HYPERPRIOR_PALETTE = [
+    "#0072B2", "#E69F00", "#009E73", "#CC79A7", "#D55E00",
+    "#56B4E9", "#F0E442", "#7A76D1", "#B15A00", "#8B0000",
+    "#20B2AA", "#6A5ACD",
+]
 
 
 def hyperprior_family(specification: dict) -> str:
@@ -191,8 +198,8 @@ def hyperprior_family(specification: dict) -> str:
     if kind == "halfcauchy":
         return "horseshoe"
     if kind == "lognormal":
-        return "gp"
-    return "gp"
+        return "gp_ell" if "ell" in label or "length" in label else "gp_sigma"
+    return "gp_sigma"
 
 
 def specification_key(specification: dict) -> tuple:
@@ -389,19 +396,24 @@ def plot_consolidated_results(
         raise ValueError("Provide at least one --run RESULTS_DIRECTORY LABEL pair")
     loaded = [load_run(directory, label, x_key, observation_key) for directory, label in runs]
     kappa_count = max((len(run["kappa_keys"]) for run in loaded), default=0)
-    nrows = 2 + kappa_count
+    nrows = 3 + kappa_count
     fig = plt.figure(figsize=(12, max(11, 3.2 * nrows)))
-    gs = fig.add_gridspec(nrows, 2, height_ratios=[1.15] + [1.0] * (kappa_count + 1))
+    gs = fig.add_gridspec(
+        nrows, 2,
+        height_ratios=[1.15, 1.15] + [1.0] * (kappa_count + 1),
+    )
     ax_emulator = fig.add_subplot(gs[0, 0])
-    ax_delta = fig.add_subplot(gs[0, 1])
-    kappa_axes = [fig.add_subplot(gs[k + 1, :]) for k in range(kappa_count)]
-    ax_posterior = fig.add_subplot(gs[-1, 0])
-    ax_hyperprior = fig.add_subplot(gs[-1, 1])
+    ax_hyperprior = fig.add_subplot(gs[0, 1])
+    ax_delta = fig.add_subplot(gs[1, :])
+    kappa_axes = [fig.add_subplot(gs[k + 2, :]) for k in range(kappa_count)]
+    ax_posterior = fig.add_subplot(gs[-1, :])
     colors = plt.get_cmap("turbo")(np.linspace(0.03, 0.97, len(loaded)))
     legend_handles = []
     legend_entries = {}
     hyperprior_specs = {}
+    hyperprior_colors = {}
     beta_ax = None
+    delta_ax = None
     for run_index, (run, color) in enumerate(zip(loaded, colors)):
         a = run["arrays"]
         x = a[run["x_key"]]
@@ -510,7 +522,10 @@ def plot_consolidated_results(
             kind = specification["kind"]
             prior = specification["params"]
             family = hyperprior_family(specification)
-            hyperprior_color = HYPERPRIOR_COLORS[family]
+            hyperprior_color = HYPERPRIOR_PALETTE[
+                len(hyperprior_colors) % len(HYPERPRIOR_PALETTE)
+            ]
+            hyperprior_colors[key] = hyperprior_color
             if kind == "gamma":
                 shape = float(prior.get("shape", 1.0))
                 rate = float(prior.get("rate", 1.0))
@@ -538,12 +553,31 @@ def plot_consolidated_results(
                 sigma = sigma if sigma > 0 else 0.5
                 upper = stats.lognorm.ppf(.995, s=sigma, scale=np.exp(mu))
                 grid = np.linspace(max(0.0, upper * 1e-4), upper, 500)
+                if "delta_eta" in specification["label"].lower():
+                    if delta_ax is None:
+                        delta_ax = inset_axes(
+                            ax_hyperprior,
+                            width="44%",
+                            height="48%",
+                            loc="lower left",
+                            borderpad=1.2,
+                        )
+                        delta_ax.set_title(r"$\delta_\eta$ GP priors", fontsize="x-small")
+                        delta_ax.set_xlabel("Hyperparameter value", fontsize="x-small")
+                        delta_ax.set_ylabel("Density", fontsize="x-small")
+                        delta_ax.tick_params(labelsize="x-small")
+                        delta_ax.grid(True, alpha=.18)
             else:
                 scale = float(prior.get("scale", prior.get("sigma", 1.0)))
                 scale = scale if scale > 0 else 1.0
                 grid = np.linspace(0, stats.cauchy.ppf(.995, scale=scale), 500)
             density = density_points(specification, grid)
-            target_ax = beta_ax if kind == "beta" else ax_hyperprior
+            if kind == "beta":
+                target_ax = beta_ax
+            elif "delta_eta" in specification["label"].lower():
+                target_ax = delta_ax
+            else:
+                target_ax = ax_hyperprior
             target_ax.plot(
                 grid, density, color=hyperprior_color, lw=1.8,
                 label="_nolegend_",
@@ -587,7 +621,19 @@ def plot_consolidated_results(
             )
 
     ax_emulator.set_title("Emulator Prior (No Discrepancy)")
-    ax_delta.set_title(r"Additive Discrepancy $\delta_\eta(x)$")
+    delta_nrmse_values = [
+        run["metrics"].get("delta_nrmse")
+        for run in loaded
+        if run["metrics"].get("delta_nrmse") is not None
+    ]
+    ax_delta.set_title(
+        r"Additive Discrepancy $\delta_\eta(x)$"
+        + (
+            rf" (NRMSE={float(np.mean(delta_nrmse_values)):.3g})"
+            if delta_nrmse_values
+            else ""
+        )
+    )
     ax_emulator.set_ylabel(emulator_y_label or "Emulator output")
     ax_posterior.set_ylabel(posterior_y_label or "Predicted response")
     ax_delta.set_ylabel(delta_y_label or "Correction")
@@ -597,7 +643,16 @@ def plot_consolidated_results(
     ax_hyperprior.set_ylabel("Density")
     ax_hyperprior.set_xlabel("Hyperparameter value")
     for k in range(kappa_count):
-        kappa_axes[k].set_title(rf"Calibration discrepancy: $\kappa_{k}(x)$")
+        kappa_title = rf"Calibration discrepancy: $\kappa_{k}(x)$"
+        field_values = []
+        for run in loaded:
+            theta_nrmse = run["metrics"].get("theta_nrmse") or {}
+            value = theta_nrmse.get(f"theta_{k}")
+            if value is not None:
+                field_values.append(float(value))
+        if field_values:
+            kappa_title += rf" (kappa NRMSE={float(np.mean(field_values)):.3g})"
+        kappa_axes[k].set_title(kappa_title)
         kappa_axes[k].set_ylabel(kappa_y_label or "Parameter correction")
         kappa_axes[k].set_xlabel(x_label or "Application domain")
     ax_posterior.set_title("Full Posterior Prediction")
@@ -607,13 +662,12 @@ def plot_consolidated_results(
         if ax is not ax_hyperprior:
             deduplicate_axis_legend(ax)
     unique_hyperprior = {}
-    for specification in hyperprior_specs.values():
-        family = hyperprior_family(specification)
+    for key, specification in hyperprior_specs.items():
         label = specification["label"]
         if label not in unique_hyperprior:
             unique_hyperprior[label] = Line2D(
                 [0], [0],
-                color=HYPERPRIOR_COLORS[family],
+                color=hyperprior_colors[key],
                 lw=1.8,
             )
     if unique_hyperprior:
@@ -635,7 +689,13 @@ def plot_consolidated_results(
         title="Runs",
     )
     fig.suptitle(title, y=1.02, fontsize=15)
-    fig.tight_layout(rect=(0, 0, 1, .94), h_pad=.8)
+    fig.subplots_adjust(
+        left=0.08,
+        right=0.98,
+        bottom=0.04,
+        top=0.94,
+        hspace=0.52,
+    )
     destination = Path(output_path).expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(destination, dpi=180, bbox_inches="tight")

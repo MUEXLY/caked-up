@@ -1116,6 +1116,9 @@ def plot_prior_posterior_comparison(
         ax = axes[1, h]
         values = np.asarray(trace, dtype=float).ravel()
         values = values[min(max(int(burn_in) + 1, 0), len(values) - 1):]
+        values = values[np.isfinite(values)]
+        if spec["kind"] in {"gamma", "beta", "halfcauchy", "lognormal"}:
+            values = values[values > 0]
         if values.size == 0:
             raise ValueError(f"Empty posterior trace for {spec['label']}")
         prior_grid, prior_density = prior_curve(spec, values)
@@ -1255,6 +1258,111 @@ def plot_emulator_prior(y_prior_mean, y_prior_var, model_data, model_normalized,
 
         return()
 
+def _plot_hyperprior_pane(ax, hyperparameter_traces, hyperparameter_specs, burn_in=0):
+    """Plot distinct prescribed hyperprior densities in a diagnostic pane."""
+    traces = hyperparameter_traces or []
+    specs = hyperparameter_specs or []
+    palette = [
+        "#0072B2", "#E69F00", "#009E73", "#CC79A7", "#D55E00",
+        "#56B4E9", "#F0E442", "#7A76D1", "#B15A00", "#8B0000",
+        "#20B2AA", "#6A5ACD",
+    ]
+    unique_colors = {}
+    for index, spec in enumerate(specs):
+        key = (spec["label"], spec.get("name", spec["label"]))
+        if key not in unique_colors:
+            unique_colors[key] = palette[len(unique_colors) % len(palette)]
+    from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+
+    beta_ax = None
+    delta_ax = None
+    if any(spec["label"] == "delta_eta" for spec in specs):
+        delta_ax = inset_axes(
+            ax, width="44%", height="48%", loc="lower left", borderpad=1.2
+        )
+        delta_ax.set_title(r"$\delta_\eta$ GP priors", fontsize="x-small")
+        delta_ax.set_xlabel(r"Hyperparameter value", fontsize="x-small")
+        delta_ax.set_ylabel("Density", fontsize="x-small")
+        delta_ax.tick_params(labelsize="x-small")
+        delta_ax.grid(True, alpha=0.18)
+    for trace, spec in zip(traces, specs):
+        label = spec["label"]
+        kind = spec["kind"]
+        prior = spec["prior"]
+        if kind == "lognormal":
+            mu = float(prior["mu"])
+            sigma = max(float(prior["sigma"]), 1e-8)
+            dist = lognorm(s=sigma, scale=np.exp(mu))
+            upper = dist.ppf(0.995)
+            grid = np.linspace(max(0.0, upper * 1e-4), upper, 500)
+        elif kind == "gamma":
+            shape = float(prior["shape"])
+            rate = float(prior["rate"])
+            dist = gamma_distribution(a=shape, scale=1.0 / rate)
+            upper = dist.ppf(0.995)
+            grid = np.linspace(0.0, max(upper, 1e-6), 500)
+        elif kind == "beta":
+            alpha = float(prior["alpha"])
+            beta = float(prior["beta"])
+            dist = beta_distribution(a=alpha, b=beta)
+            grid = np.linspace(0.002, 0.998, 500)
+            if beta_ax is None:
+                beta_ax = inset_axes(
+                    ax, width="52%", height="52%", loc="lower right", borderpad=1.2
+                )
+                beta_ax.set_title(r"$\pi$ (Beta prior)", fontsize="x-small")
+                beta_ax.set_xlim(0, 1)
+                beta_ax.set_xlabel(r"$\pi$", fontsize="x-small")
+                beta_ax.set_ylabel("Density", fontsize="x-small")
+                beta_ax.tick_params(labelsize="x-small")
+                beta_ax.grid(True, alpha=0.18)
+        else:
+            scale = float(prior.get("scale", 1.0))
+            dist = halfcauchy(scale=max(scale, 1e-8))
+            upper = dist.ppf(0.995)
+            grid = np.linspace(0.0, max(upper, 1e-6), 500)
+
+        density = dist.pdf(grid)
+        if kind == "beta":
+            target_ax = beta_ax
+        elif spec["label"] == "delta_eta":
+            target_ax = delta_ax
+        else:
+            target_ax = ax
+        color_key = (spec["label"], spec.get("name", spec["label"]))
+        color = unique_colors[color_key]
+        target_ax.plot(grid, density, color=color, lw=1.5)
+        target_ax.fill_between(grid, 0, density, color=color, alpha=0.10)
+
+    legend_entries = {}
+    for trace, spec in zip(traces, specs):
+        hyperparameter_name = spec.get("name")
+        legend_label = (
+            f"{hyperparameter_name} ({spec['label']})"
+            if hyperparameter_name
+            else spec["label"]
+        )
+        legend_entries.setdefault(
+            legend_label,
+            plt.Line2D(
+                [0], [0],
+                color=unique_colors[(spec["label"], spec.get("name", spec["label"]))],
+                lw=1.8,
+            ),
+        )
+    if legend_entries:
+        ax.legend(
+            list(legend_entries.values()),
+            list(legend_entries.keys()),
+            loc="upper right",
+            fontsize="x-small",
+            frameon=True,
+        )
+    ax.set_title("Prescribed Hyperprior Distributions")
+    ax.set_xlabel("Hyperparameter value")
+    ax.set_ylabel("Density")
+    ax.grid(True, alpha=0.22)
+
 
 def plot_discrepancy_diagnostics(
     x_obs,
@@ -1286,6 +1394,11 @@ def plot_discrepancy_diagnostics(
     theta_prior_min=None,
     theta_prior_max=None,
     theta_fixed_plot=None,
+    hyperparameter_traces=None,
+    hyperparameter_specs=None,
+    burn_in=0,
+    delta_nrmse=None,
+    kappa_nrmse=None,
 ):
     plot_settings = plot_settings or {}
     x_input = _domain_matrix(x_obs)
@@ -1314,6 +1427,11 @@ def plot_discrepancy_diagnostics(
                 theta_prior_min=theta_prior_min,
                 theta_prior_max=theta_prior_max,
                 theta_fixed_plot=theta_fixed_plot,
+                hyperparameter_traces=hyperparameter_traces,
+                hyperparameter_specs=hyperparameter_specs,
+                burn_in=burn_in,
+                delta_nrmse=delta_nrmse,
+                kappa_nrmse=kappa_nrmse,
             )
         return
 
@@ -1377,16 +1495,17 @@ def plot_discrepancy_diagnostics(
         )
 
     # Layout:
-    # row 0 -> 2 columns (ax1, ax2)
-    # rows 1..dtheta -> one full-width subplot each for delta_theta[k]
-    # last row -> one full-width subplot for posterior
-    n_rows = 2 + dtheta
+    # row 0 -> emulator prior and hyperpriors
+    # row 1 -> full-width additive discrepancy
+    # rows 2.. -> one full-width subplot per kappa field
+    # final row -> full-width posterior prediction
+    n_rows = 3 + dtheta
 
     # add another row if holdout data is on
     if cross_validation_settings.get("holdout_data", False) and holdout_data is not None:
         n_rows += 1
 
-    fig = plt.figure(figsize=(10, 3.2 * n_rows))
+    fig = plt.figure(figsize=(12, 3.2 * n_rows))
     gs = fig.add_gridspec(n_rows, 2)
 
     # Top Left: Emulator Prior
@@ -1419,8 +1538,17 @@ def plot_discrepancy_diagnostics(
     ax1.set_ylabel(plot_settings.get("observation_value_label", "y"))
     ax1.legend()
 
-    # Top Right: δ_eta contribution
-    ax2 = fig.add_subplot(gs[0, 1])
+    # Top Right: prescribed hyperpriors
+    ax_hyperprior = fig.add_subplot(gs[0, 1])
+    _plot_hyperprior_pane(
+        ax_hyperprior,
+        hyperparameter_traces,
+        hyperparameter_specs,
+        burn_in=burn_in,
+    )
+
+    # Full-width additive discrepancy row
+    ax2 = fig.add_subplot(gs[1, :])
     ax2.plot(
         x, delta_eta_mean,
         label=plot_settings.get("delta_eta_mean_label", r"$\delta_\eta$ mean"),
@@ -1462,7 +1590,10 @@ def plot_discrepancy_diagnostics(
             ax2.plot(x, delta_known, label=r"$\delta_\eta^{\mathrm{true}}(x)$", linestyle="--", color="red")
         
     ax2.axhline(0, linestyle="--")
-    ax2.set_title(r"Additive Discrepancy $\delta_{\eta}(x)$")
+    delta_title = r"Additive Discrepancy $\delta_{\eta}(x)$"
+    if delta_nrmse is not None:
+        delta_title += rf" (NRMSE={float(delta_nrmse):.3g})"
+    ax2.set_title(delta_title)
     ax2.set_xlabel(domain_label)
     ax2.set_ylabel(plot_settings.get("correction_label", "Correction"))
     ax2.legend()
@@ -1474,7 +1605,7 @@ def plot_discrepancy_diagnostics(
 
     for k in range(dtheta):
 
-        ax_k = fig.add_subplot(gs[1 + k, :])
+        ax_k = fig.add_subplot(gs[2 + k, :])
 
         delta_theta_k_mean = kappa_mean[k, :]
         delta_theta_k_std  = kappa_std[k, :]
@@ -1540,7 +1671,15 @@ def plot_discrepancy_diagnostics(
                 )
             )
 
-            ax_k.set_title(f"Calibration discrepancy: {kappa_title}(x)")
+            kappa_title_text = f"Calibration discrepancy: {kappa_title}(x)"
+            kappa_field_nrmse = None
+            if isinstance(kappa_nrmse, dict):
+                kappa_field_nrmse = kappa_nrmse.get(f"theta_{k}", kappa_nrmse.get(f"kappa_{k}"))
+            elif kappa_nrmse is not None:
+                kappa_field_nrmse = kappa_nrmse
+            if kappa_field_nrmse is not None:
+                kappa_title_text += rf" (kappa NRMSE={float(kappa_field_nrmse):.3g})"
+            ax_k.set_title(kappa_title_text)
             ax_k.set_ylabel(f"{parameter_label}(x)")
 
         elif theta_init == "compositional":
@@ -1606,7 +1745,15 @@ def plot_discrepancy_diagnostics(
                     "alpha": 0.85,
                 },
             )
-            ax_k.set_title(f"Calibrated model: {kappa_title}(x)")
+            kappa_title_text = f"Calibrated model: {kappa_title}(x)"
+            kappa_field_nrmse = None
+            if isinstance(kappa_nrmse, dict):
+                kappa_field_nrmse = kappa_nrmse.get(f"theta_{k}", kappa_nrmse.get(f"kappa_{k}"))
+            elif kappa_nrmse is not None:
+                kappa_field_nrmse = kappa_nrmse
+            if kappa_field_nrmse is not None:
+                kappa_title_text += rf" (kappa NRMSE={float(kappa_field_nrmse):.3g})"
+            ax_k.set_title(kappa_title_text)
             ax_k.set_ylabel(f"{calibrated_label}(x)")
 
         if theta_init == "fixed":
@@ -1702,7 +1849,7 @@ def plot_discrepancy_diagnostics(
         ax_k.legend()
 
     # Bottom: Full Posterior (also full width)
-    ax3 = fig.add_subplot(gs[1 + dtheta, :])
+    ax3 = fig.add_subplot(gs[2 + dtheta, :])
     ax3.scatter(
         x, y_obs,
         label=plot_settings.get("observation_data_label", "Observed"),
@@ -1738,7 +1885,7 @@ def plot_discrepancy_diagnostics(
         y_holdout_post_var = y_holdout_post_var[holdout_order]
 
 
-        ax4 = fig.add_subplot(gs[2+dtheta,:])
+        ax4 = fig.add_subplot(gs[3+dtheta,:])
 
         ax4.scatter(
             x_holdout,
@@ -1763,7 +1910,11 @@ def plot_discrepancy_diagnostics(
         ax4.set_title(plot_settings.get("holdout_title", "Holdout Posterior Prediction"))
         ax4.legend()
 
-    plt.suptitle(suptitle)
+    y_range = float(np.max(y_obs) - np.min(y_obs))
+    y_rmse = float(np.sqrt(np.mean((np.asarray(y_obs) - np.asarray(y_post_mean)) ** 2)))
+    y_nrmse = y_rmse / (y_range if y_range > 1e-12 else 1.0)
+    ax3.set_title(f"Full Posterior Prediction (NRMSE={y_nrmse:.3g})")
+    plt.suptitle(f"{suptitle} | y NRMSE={y_nrmse:.3g}")
     plt.tight_layout()
     # plt.show()
     plt_path = os.path.join(figure_path, figure_name)
