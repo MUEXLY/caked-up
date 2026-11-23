@@ -126,6 +126,8 @@
 
             "orthogonalize_delta_eta": true,
 
+            "orthogonalize_kappa": true,
+
             "theta_epsilon": 1e-2
         },
 

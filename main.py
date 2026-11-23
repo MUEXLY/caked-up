@@ -57,8 +57,20 @@ def main():
     # store calibration settings
     calibration_settings = config["calibration_settings"]
 
-    # load settings for orthogonalization of delta_eta with respect to sensitivities G
-    orthogonalization_settings = calibration_settings["orthogonalization_settings"]
+    # load settings for orthogonalization with respect to sensitivities G
+    orthogonalization_settings = calibration_settings.get(
+        "orthogonalization_settings",
+        {},
+    )
+    orthogonalize_delta_eta_enabled = orthogonalization_settings.get(
+        "orthogonalize_delta_eta",
+        False,
+    )
+    orthogonalize_kappa_enabled = orthogonalization_settings.get(
+        "orthogonalize_kappa",
+        True,
+    )
+    theta_epsilon = orthogonalization_settings.get("theta_epsilon", 1e-2)
 
     # store input settings
     input_settings = config["input_settings"]
@@ -655,14 +667,17 @@ def main():
 
     # principal directions in theta space
     W = Vt.T   # shape (dtheta, dtheta)
+    def map_kappa_z_to_theta(kappa_z_fields):
+        if orthogonalize_kappa_enabled:
+            return W @ kappa_z_fields
+        return kappa_z_fields
 
     # ============================================================
     # 4a. Initialize discrepancy \kappa(x) latent vectors
     # ============================================================
 
     kappa_z = np.zeros((dtheta, No))  # shape (dtheta, No)
-    # kappa_theta = np.zeros((dtheta, No))
-    kappa_theta=W @ kappa_z  # shape (dtheta, No)``
+    kappa_theta = map_kappa_z_to_theta(kappa_z)
     if directional_constraints["enabled"] and directional_constraints["mode"] == "hard":
         print("Searching for a feasible starting state for hard constraints...")
         theta_base_obs = (
@@ -672,12 +687,12 @@ def main():
         )
         kappa_z = initialize_hard_constraint_state(
             kappa_z,
-            lambda fields: theta_base_obs + (W @ fields).T,
+            lambda fields: theta_base_obs + map_kappa_z_to_theta(fields).T,
             gp_eta,
             x_obs,
             directional_constraints,
         )
-        kappa_theta = W @ kappa_z
+        kappa_theta = map_kappa_z_to_theta(kappa_z)
         print(
             "Initialized kappa fields at a feasible hard-constraint state; "
             f"latent correction norm={np.linalg.norm(kappa_z):.4g}."
@@ -773,7 +788,7 @@ def main():
                 },
                 {
                     "label": label,
-                    "name": r"$\mathrm{var}$",
+                    "name": r"$\sigma$",
                     "parameter": "var",
                     "kind": "lognormal",
                     "prior": prior.config["var_prior"],
@@ -832,11 +847,10 @@ def main():
     print("\nRunning embedded δ-MH sampler...\n")
 
     for it in range(Nmcmc):
-
         # ---- update kappa fields ----
         if directional_constraints["enabled"]:
             def joint_log_posterior(candidate):
-                physical_kappa = W @ candidate
+                physical_kappa = map_kappa_z_to_theta(candidate)
                 likelihood = float(np.sum(log_likelihood_embedded(
                     y_obs,
                     x_obs,
@@ -907,8 +921,8 @@ def main():
 
             # kappa_theta[k] -= np.mean(kappa_theta[k])
 
-        
-            
+        kappa_theta = map_kappa_z_to_theta(kappa_z)
+
         # ---- adapt mh_scale_kappa during burn-in ----
         if it < burnin and (it + 1) % adapt_interval == 0:
 
@@ -952,7 +966,12 @@ def main():
             )
 
         # ---- compute sensitivities ---- (@ theta fixed)
-        G=compute_sensitivities(x_obs, theta_fixed, gp_eta, orthogonalization_settings['theta_epsilon'])
+        G = compute_sensitivities(
+            x_obs,
+            theta_fixed,
+            gp_eta,
+            theta_epsilon,
+        )
 
         # ---- update δ_eta_raw (Gibbs) ----
         # delta_eta_raw = gibbs_delta_eta(
@@ -979,7 +998,7 @@ def main():
 
         # orthogonalize delta_eta with respect to the sensitivities G
 
-        if orthogonalization_settings['orthogonalize_delta_eta']:
+        if orthogonalize_delta_eta_enabled:
             proposed_delta_eta = orthogonalize_delta_eta(delta_eta_raw, G)
         else:
             proposed_delta_eta = delta_eta_raw
@@ -990,7 +1009,7 @@ def main():
                 if theta_fixed.ndim == 1
                 else theta_fixed
             )
-            theta_star_obs = theta_base_obs + (W @ kappa_z).T
+            theta_star_obs = theta_base_obs + map_kappa_z_to_theta(kappa_z).T
             current_delta_score = monotonicity_log_penalty(
                 gp_eta,
                 x_obs,
@@ -1090,7 +1109,7 @@ def main():
         )
         
         # CRITICAL: map back AFTER updating all components
-        kappa_theta = W @ kappa_z
+        kappa_theta = map_kappa_z_to_theta(kappa_z)
 
         # ---- diagnostic ----
         # print("theta_fixed.shape:", np.shape(theta_fixed))
@@ -1157,7 +1176,7 @@ def main():
                     f"ell={hyperparameter_trace[it + 1, h, 0]:.6g},",
                     f"var={hyperparameter_trace[it + 1, h, 1]:.6g}",
                 )
-            if orthogonalization_settings['orthogonalize_delta_eta']:
+            if orthogonalize_delta_eta_enabled:
                 proj = G @ np.linalg.solve(G.T @ G, G.T @ delta_eta)
                 print("Projection norm (should be near 0):", np.linalg.norm(proj))
                 
@@ -1190,7 +1209,7 @@ def main():
         plot_prior_posterior_comparison(
             theta_prior_physical=model_data[theta_columns].to_numpy(),
             theta_posterior_physical=theta_posterior_physical,
-            theta_labels=theta_labels,
+            theta_labels=sensitivity_labels,
             hyperparameter_traces=density_traces,
             hyperparameter_specs=density_specs,
             figures_directory=figure_path,
@@ -1683,7 +1702,12 @@ def main():
 
     if results_options['output_physical_results']:
         print(f'Saving physical results to {results_path}...')
-        np.savez(os.path.join(results_path, "results_physical.npz"), **results_physical)
+        physical_archive = {
+            **{key: np.asarray(values) for key, values in results_physical.items()},
+            "theta_fixed_physical": np.asarray(theta_fixed_phys_arr).ravel(),
+            "theta_fixed_normalized": np.asarray(theta_fixed_arr).ravel(),
+        }
+        np.savez(os.path.join(results_path, "results_physical.npz"), **physical_archive)
         print(f"Saved physical results to {os.path.join(results_path, 'results_physical.npz')}")
 
     # if evaluating against holdout data, interpolate the kappa and delta fields to the holdout x values and save the results to a separate file
@@ -1766,6 +1790,21 @@ def main():
             "delta_holdout": delta_holdout * y_sd  # scale to physical units
         }
 
+        physical_archive_path = os.path.join(results_path, "results_physical.npz")
+        with np.load(physical_archive_path) as physical_archive:
+            physical_archive_data = {
+                key: physical_archive[key]
+                for key in physical_archive.files
+            }
+        for key, value in holdout_results_physical.items():
+            if key == "x":
+                physical_archive_data["x_holdout"] = np.asarray(value)
+            elif key == "y":
+                physical_archive_data["y_holdout"] = np.asarray(value)
+            elif key in {"y_holdout_post_mean", "y_holdout_post_std", "y_holdout_post_var"}:
+                physical_archive_data[key] = np.asarray(value)
+        np.savez(physical_archive_path, **physical_archive_data)
+
 
 
     # ============================================================
@@ -1811,6 +1850,9 @@ def main():
             print(f"Known delta parameters: {known_delta_params}")
 
 
+    single_delta_nrmse = None
+    single_kappa_nrmse = {}
+
     if figure_options['posterior_predict_physical']:
         print(f'Generating posterior predictive check figure (physical units)...')
         # y_sim_phys = model_data["y_sim_y"].values
@@ -1823,6 +1865,66 @@ def main():
             results_physical[f"x_obs_{label}"].values
             for label in app_labels
         ])
+        single_delta_nrmse = None
+        single_kappa_nrmse = {}
+        if cross_validation_settings.get("conduct_cross_validation", False):
+            kappa_nrmse_values = {}
+            known_theta_form = cross_validation_settings.get("known_theta_form")
+            known_theta_params = cross_validation_settings.get(
+                "known_theta_form_params", {}
+            ).get(known_theta_form, {})
+            x_vals = np.asarray(x_obs_phys[:, 0], dtype=float)
+            theta_settings = calibration_settings.get("theta_settings", {})
+            theta_init = theta_settings.get("theta_initialization", "fixed")
+            for k in range(dtheta):
+                if known_theta_form == "constant":
+                    theta_true_k = np.ones(No) * known_theta_params["values"][k]
+                elif known_theta_form == "trig_funct":
+                    func = known_theta_params["functions"][k]
+                    theta_true_k = np.sin(x_vals) if func == "sin" else np.cos(x_vals)
+                elif known_theta_form == "linear":
+                    theta_true_k = known_theta_params["m"] * x_vals + known_theta_params["b"]
+                else:
+                    theta_true_k = None
+                if theta_true_k is not None:
+                    if theta_init == "fixed":
+                        theta_base_k = float(theta_fixed_phys_arr[k])
+                    else:
+                        theta_base_k = np.asarray(theta_fixed_phys_arr[k], dtype=float)
+                    kappa_true_k = theta_true_k - theta_base_k
+                    kappa_pred_k = results_physical[f"kappa_{k}_mean"].values
+                    kappa_range = float(np.max(kappa_true_k) - np.min(kappa_true_k))
+                    if kappa_range < 1e-12:
+                        kappa_range = 1.0
+                    kappa_nrmse_values[f"theta_{k}"] = float(
+                        np.sqrt(np.mean((kappa_true_k - kappa_pred_k) ** 2)) / kappa_range
+                    )
+            if kappa_nrmse_values:
+                single_kappa_nrmse = kappa_nrmse_values
+
+            known_delta_form = cross_validation_settings.get("known_delta_form")
+            if known_delta_form is not None:
+                delta_params = cross_validation_settings.get(
+                    "known_delta_form_params", {}
+                ).get(known_delta_form, {})
+                if known_delta_form == "power_law":
+                    delta_true = delta_params["coeff"] * np.abs(x_vals) ** delta_params["exponent"]
+                elif known_delta_form == "trig_funct":
+                    delta_true = np.zeros_like(x_vals)
+                    for func in delta_params["function"]:
+                        delta_true += np.sin(x_vals) if func == "sin" else np.cos(x_vals)
+                elif known_delta_form == "linear":
+                    delta_true = delta_params["m"] * x_vals + delta_params["b"]
+                elif known_delta_form == "polynomial":
+                    delta_true = np.polyval(delta_params["coeffs"], x_vals)
+                else:
+                    delta_true = None
+                if delta_true is not None:
+                    delta_pred = results_physical["delta_eta_mean"].values
+                    delta_range = max(float(np.max(delta_true) - np.min(delta_true)), 1e-12)
+                    single_delta_nrmse = float(
+                        np.sqrt(np.mean((delta_true - delta_pred) ** 2)) / delta_range
+                    )
         x_obs_norm = x_obs.copy()
         # Z_obs=np.hstack([x_obs_norm.reshape(-1,1), 
                         #  np.tile(theta_fixed_arr, 
@@ -1879,6 +1981,11 @@ def main():
             theta_prior_min=theta_prior_min_phys,
             theta_prior_max=theta_prior_max_phys,
             theta_fixed_plot=theta_fixed_phys_arr,
+            hyperparameter_traces=density_traces,
+            hyperparameter_specs=density_specs,
+            burn_in=burnin,
+            delta_nrmse=single_delta_nrmse,
+            kappa_nrmse=single_kappa_nrmse,
         )
 
 
@@ -1929,6 +2036,11 @@ def main():
             theta_prior_min=np.zeros(dtheta),
             theta_prior_max=np.ones(dtheta),
             theta_fixed_plot=theta_fixed,
+            hyperparameter_traces=density_traces,
+            hyperparameter_specs=density_specs,
+            burn_in=burnin,
+            delta_nrmse=single_delta_nrmse,
+            kappa_nrmse=single_kappa_nrmse,
         )
 
     if figure_options['variance_decomposition']:
@@ -2097,18 +2209,9 @@ def main():
             theta_init = theta_settings.get("theta_initialization", "fixed")
 
             if theta_init == "fixed":
-
-                theta_pred_k = (
-                    theta_fixed[k]
-                    + kappa_mean[k, :]
-                )
-
+                theta_base_k = float(theta_fixed_phys_arr[k])
             elif theta_init == "compositional":
-
-                theta_pred_k = (
-                    theta_fixed[:, k]
-                    + kappa_mean[k, :]
-                )
+                theta_base_k = np.asarray(theta_fixed_phys_arr[k], dtype=float)
 
             else:
                 raise ValueError(f"Unknown theta initialization: {theta_init}")
@@ -2117,15 +2220,15 @@ def main():
             # MSE
             # ----------------------------------------------------
 
-            mse_k = np.mean(
-                (theta_true_k - theta_pred_k) ** 2
-            )
+            kappa_true_k = theta_true_k - theta_base_k
+            kappa_pred_k = results_physical[f"kappa_{k}_mean"].values
+            mse_k = np.mean((kappa_true_k - kappa_pred_k) ** 2)
 
             rmse_k = np.sqrt(mse_k)
 
             theta_range_k = (
-                np.max(theta_true_k)
-                - np.min(theta_true_k)
+                np.max(kappa_true_k)
+                - np.min(kappa_true_k)
             )
 
             if theta_range_k < 1e-12:
@@ -2237,7 +2340,6 @@ def main():
 
             delta_pred_phys = (
                 delta_pred_norm * y_std
-                + y_mean
             )
 
             delta_mse = np.mean(

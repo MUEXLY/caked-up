@@ -1,0 +1,83 @@
+{
+  "base_config": "config.json",
+  "output_root": "results/orthogonality_sensitivity",
+  "generated_config_root": "configs/orthogonality_sensitivity",
+  "array_concurrency": 4,
+  "disable_figures": false,
+  "cases": [
+    {
+      "id": "full_orthogonality",
+      "label": "Full orthogonality",
+      "orthogonalize_kappa": true,
+      "orthogonalize_delta_eta": true
+    },
+    {
+      "id": "no_orthogonality",
+      "label": "No orthogonality",
+      "orthogonalize_kappa": false,
+      "orthogonalize_delta_eta": false
+    },
+    {
+      "id": "kappa_only",
+      "label": "Kappa orthogonality only",
+      "orthogonalize_kappa": true,
+      "orthogonalize_delta_eta": false
+    },
+    {
+      "id": "delta_only",
+      "label": "Delta orthogonality only",
+      "orthogonalize_kappa": false,
+      "orthogonalize_delta_eta": true
+    }
+  ],
+  "studies": {
+    "study1": {
+      "overrides": {
+        "input_settings": {
+          "model_data_path": "studyNo1/modelData",
+          "obs_data_path": "studyNo1/observationData",
+          "input_delimiter": ","
+        },
+        "cross_validation_settings": {
+          "conduct_cross_validation": true,
+          "known_theta_form": "constant",
+          "known_theta_form_params": {
+            "constant": {
+              "values": [1.5, 1.75]
+            }
+          },
+          "known_delta_form": "trig_funct",
+          "known_delta_form_params": {
+            "trig_funct": {
+              "function": ["cos"]
+            }
+          }
+        }
+      }
+    },
+    "study2": {
+      "overrides": {
+        "input_settings": {
+          "model_data_path": "studyNo2/modelData",
+          "obs_data_path": "studyNo2/observationData",
+          "input_delimiter": ","
+        },
+        "cross_validation_settings": {
+          "conduct_cross_validation": true,
+          "known_theta_form": "trig_funct",
+          "known_theta_form_params": {
+            "trig_funct": {
+              "functions": ["sin", "cos"]
+            }
+          },
+          "known_delta_form": "trig_funct",
+          "known_delta_form_params": {
+            "trig_funct": {
+              "function": ["cos"]
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -217,6 +217,9 @@ top row overlays the physical simulator-input distributions with the posterior
 distribution of \(\theta^0+\kappa\). The bottom row overlays each configured
 hyperprior with its sampled posterior for GP, lasso, fused-lasso, horseshoe,
 and spike-slab shrinkage priors.
+The horseshoe panel uses the sampler's actual half-Cauchy global scale with
+scale 1.0; the current horseshoe `tau_prior` setting is not used by the
+sampler.
 
 Kappa diagnostic panels shade each parameter's simulator prior range relative
 to the utilized $\theta^0$ value, identify the corresponding $\theta$ parameter,
@@ -403,6 +406,22 @@ python3 post_process_sweep.py
 python3 sensitivity_analysis/sensitivity_analysis.py
 ```
 
+## Orthogonality Sensitivity Study
+
+The dedicated orthogonality sweep compares full orthogonality, no
+orthogonality, kappa-only orthogonality, and delta-only orthogonality.
+
+```bash
+python3 sensitivity_analysis/generate_orthogonality_sensitivity.py
+sbatch configs/orthogonality_sensitivity/run_orthogonality_sensitivity.generated.sbatch
+python3 sensitivity_analysis/post_process_orthogonality_sensitivity.py
+```
+
+Edit `sensitivity_analysis/orthogonality_sensitivity_config.json` to change the
+base config, study definitions, or array concurrency. The generated configs
+explicitly set `orthogonalize_kappa` and `orthogonalize_delta_eta` for each
+study/case, while preserving all other calibration settings.
+
 ## Sequential Calibration
 
 Sequential runs carry each run's post-burn-in shrinkage hyperparameter
@@ -463,6 +482,7 @@ The orthogonalization procedure includes:
 - Projection between discrepancy subspaces
 - Jacobian evaluation across the application domain
 - PCA-based dimensionality reduction and decorrelation
+- Independent configuration toggles for `orthogonalize_delta_eta` and `orthogonalize_kappa`
 
 ---
 
@@ -477,6 +497,34 @@ Typical outputs include:
 - Cross-validation statistics
 - Sensitivity analysis figures
 - Hyperparameter sweep summaries
+
+## Overlay posterior predictions from multiple runs
+
+Use `post_processing/plot_consolidated_results.py` to compare physical-space
+posterior predictions from several calibration result directories. Repeat
+`--run` once per result directory and provide the legend label after the path:
+
+```bash
+python post_processing/plot_consolidated_results.py \
+  --run gui_runs/run_a/results "Baseline" \
+  --run gui_runs/run_b/results "Alternative prior" \
+  --output post_processing/comparison.png
+```
+
+The consolidated figure uses the same publication-style layout as
+`posterior_predictive_check_physical.png`: emulator prior and prescribed
+hyperprior panels across the top, a full-width additive discrepancy panel above
+the kappa fields, and the full posterior prediction on the bottom. The
+hyperprior panel plots the prescribed distributions for GP, lasso,
+fused-lasso, horseshoe, and spike-slab priors. Curves and 95% intervals
+(`mean ± 1.96 × std`) use a distinct color per run. Cross-validation known
+forms are overlaid, and holdout observations,
+predictions, and intervals are included when saved. The run legend contains
+only the provided label and its saved NRMSE.
+For archives with multiple application-domain or observation columns, select
+the arrays with `--x-key` and `--observation-key`. Axis titles can be changed
+with `--x-label`, `--emulator-y-label`, `--posterior-y-label`, `--delta-y-label`,
+and `--kappa-y-label`.
 
 ---
 

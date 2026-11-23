@@ -69,3 +69,25 @@ per-field shrinkage-method combination. The script writes:
 Use `--metric y_nrmse` if ranking should reflect only observable prediction
 error. The component NRMSEs and shared-constraint fingerprint are retained in
 the CSV for interpretation and fairness checks.
+
+# Orthogonality sensitivity
+
+The orthogonality sensitivity runs vary only the two orthogonalization switches:
+
+- `full_orthogonality`: kappa and delta both enabled
+- `no_orthogonality`: kappa and delta both disabled
+- `kappa_only`: kappa enabled, delta disabled
+- `delta_only`: kappa disabled, delta enabled
+
+Generate the four-case Study 1 and Study 2 sweep from the repository root:
+
+```bash
+python sensitivity_analysis/generate_orthogonality_sensitivity.py
+sbatch configs/orthogonality_sensitivity/run_orthogonality_sensitivity.generated.sbatch
+python sensitivity_analysis/post_process_orthogonality_sensitivity.py
+```
+
+The generated configs are written to `configs/orthogonality_sensitivity/`,
+with outputs under `results/orthogonality_sensitivity/`. The configuration and
+case labels can be changed in
+`sensitivity_analysis/orthogonality_sensitivity_config.json`.

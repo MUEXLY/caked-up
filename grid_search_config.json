@@ -45,7 +45,12 @@
               "functions": ["sin", "cos"]
             }
           },
-          "known_delta_form": null
+          "known_delta_form": "trig_funct",
+          "known_delta_form_params": {
+            "trig_funct": {
+              "function": ["cos"]
+            }
+          }
         }
       }
     }
